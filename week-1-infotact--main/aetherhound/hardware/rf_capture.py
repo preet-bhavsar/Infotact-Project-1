@@ -271,6 +271,50 @@ class RFCaptureDevice:
             sleep_time = max(0.001, duration_per_chunk - elapsed)
             time.sleep(sleep_time)
 
+    def save_window_with_metadata(
+        self,
+        window: IQSampleWindow,
+        output_npy_path: str,
+        metadata_json_path: Optional[str] = None,
+        sensor_id: str = "SDR-01",
+    ) -> dict:
+        """
+        Save an IQSampleWindow to .npy and write complete Day 1 RF provenance metadata JSON.
+        """
+        import os
+        from aetherhound.core.evidence_metadata import (
+            SOURCE_TYPE_LIVE_HARDWARE,
+            SOURCE_TYPE_SYNTHETIC_SIMULATION,
+            build_rf_metadata,
+            compute_array_sha256,
+            save_metadata,
+        )
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_npy_path)), exist_ok=True)
+        np.save(output_npy_path, window.samples)
+        raw_hash = compute_array_sha256(window.samples)
+
+        is_syn = bool(window.is_synthetic)
+        source_type = SOURCE_TYPE_SYNTHETIC_SIMULATION if is_syn else SOURCE_TYPE_LIVE_HARDWARE
+        acq_mode = "Synthetic Complex IQ Simulation" if is_syn else "RTL-SDR Hardware IQ Stream"
+        meta_path = metadata_json_path or (os.path.splitext(output_npy_path)[0] + ".json")
+
+        meta = build_rf_metadata(
+            sensor_id=f"{sensor_id} (SYNTHETIC IQ BUFFER)" if is_syn else sensor_id,
+            source_type=source_type,
+            center_freq_hz=window.center_freq_hz,
+            sample_rate_hz=window.sample_rate_hz,
+            rf_gain=self.config.gain,
+            sample_count=len(window.samples),
+            fft_size=self.config.fft_size,
+            data_file=output_npy_path,
+            acquisition_mode=acq_mode,
+            data_sha256=raw_hash,
+            timestamp_epoch=window.timestamp,
+        )
+        save_metadata(meta, meta_path)
+        return meta
+
 
 def inject_synthetic_rf_carrier(
     window: IQSampleWindow,

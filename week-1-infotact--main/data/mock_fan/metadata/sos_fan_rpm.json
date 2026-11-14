@@ -8,8 +8,8 @@
   "center_freq_hz": null,
   "recording_duration_sec": 7.4,
   "sample_count": 371,
-  "raw_data_path": "/app/applet/data/mock_fan/rpm/sos_fan_rpm_timeline.csv",
-  "raw_data_sha256": "061f63041d9f01030e4c66c7bb62c4c677b531c27038c4ef54ce8735a03ed897",
+  "raw_data_path": "data/mock_fan/rpm/sos_fan_rpm_timeline.csv",
+  "raw_data_sha256": "f6f3ef519a3f2f5a9e9085862caf6aa653e9ccd4c4f1f550bb04a49813bcc45c",
   "device_verified": false,
   "detection_event_type": "FAN_RPM_SIMULATION",
   "metrics": {
