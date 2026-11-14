@@ -42,12 +42,17 @@ interface EventItem {
 }
 
 interface PlotAuditRecord {
+  capture_id: string;
+  modality: "RF" | "ACOUSTIC" | "FAN_SIMULATION" | "ORPHAN_PLOT" | string;
   plot_name: string;
   plot_path: string;
   metadata_found: boolean;
-  metadata_path?: string;
-  source_mode: "LIVE HARDWARE" | "SYNTHETIC SIMULATION" | "RECORDED HARDWARE DATA" | string;
+  metadata_valid: boolean;
+  metadata_path?: string | null;
+  source_type: "LIVE_HARDWARE" | "SYNTHETIC_SIMULATION" | "RECORDED_HARDWARE" | "INVALID" | string;
+  source_mode: "LIVE HARDWARE" | "SYNTHETIC SIMULATION" | "RECORDED HARDWARE" | "INVALID" | string;
   sensor_id: string;
+  acquisition_mode: string;
   capture_timestamp_iso: string;
   sample_rate_hz: number;
   sample_count_recorded: number;
@@ -60,103 +65,67 @@ interface PlotAuditRecord {
   samples_verified: boolean;
   actual_samples: number;
   timestamp_verified: boolean;
-  audit_status: "PASS_HARDWARE" | "PASS_SIMULATION" | "PASS_RECORDED" | "FAIL_INTEGRITY" | "FAIL_ORPHAN" | string;
+  validation_status: "VERIFIED" | "PARTIALLY VERIFIED" | "INVALID" | "NOT VALIDATED" | string;
+  hardware_provenance_note: string;
   failure_reasons: string[];
+  warnings: string[];
+  audit_status?: string;
 }
 
 interface AuditSummary {
   audit_timestamp_iso: string;
   audit_timestamp_epoch: number;
+  overall_result: "VERIFIED" | "PARTIALLY VERIFIED" | "INVALID" | string;
+  audit_passed: boolean;
+  total_records_audited: number;
   total_plots_audited: number;
   total_passed: number;
+  verified_count: number;
+  partially_verified_count: number;
+  failed_or_orphaned_count: number;
   hardware_derived_count: number;
   synthetic_simulation_count: number;
   recorded_hardware_count: number;
-  failed_or_orphaned_count: number;
-  audit_passed: boolean;
+  provenance_disclaimer?: string;
   plots: PlotAuditRecord[];
 }
 
-// Initial verified audit dataset (matches scripts/verify_evidence.py execution)
-const DEFAULT_AUDIT_REPORT: AuditSummary = {
-  audit_timestamp_iso: new Date().toISOString(),
-  audit_timestamp_epoch: Date.now() / 1000,
-  total_plots_audited: 3,
-  total_passed: 3,
-  hardware_derived_count: 0,
-  synthetic_simulation_count: 3,
-  recorded_hardware_count: 0,
-  failed_or_orphaned_count: 0,
-  audit_passed: true,
-  plots: [
-    {
-      plot_name: "synthetic_rf_anomaly.png",
-      plot_path: "data/plots/rf_spectrum/synthetic_rf_anomaly.png",
-      metadata_found: true,
-      metadata_path: "data/plots/rf_spectrum/synthetic_rf_anomaly.json",
-      source_mode: "SYNTHETIC SIMULATION",
-      sensor_id: "SDR-01 (SYNTHETIC IQ BUFFER)",
-      capture_timestamp_iso: new Date(Date.now() - 360000).toISOString(),
-      sample_rate_hz: 2048000,
-      sample_count_recorded: 40960,
-      raw_data_path: "data/rf/raw/synthetic_rf_anomaly_iq.npy",
-      raw_data_exists: true,
-      raw_data_type: "NUMPY_ARRAY",
-      hash_verified: true,
-      recorded_sha256: "7f4c9a8e2b1093df67ac4019ba22e75dc901e4a3c1f6b57d09ea73bc110f4492",
-      computed_sha256: "7f4c9a8e2b1093df67ac4019ba22e75dc901e4a3c1f6b57d09ea73bc110f4492",
-      samples_verified: true,
-      actual_samples: 40960,
-      timestamp_verified: true,
-      audit_status: "PASS_SIMULATION",
-      failure_reasons: [],
-    },
-    {
-      plot_name: "sos_fan_detection.png",
-      plot_path: "data/plots/acoustic_waveform/sos_fan_detection.png",
-      metadata_found: true,
-      metadata_path: "data/plots/acoustic_waveform/sos_fan_detection.json",
-      source_mode: "SYNTHETIC SIMULATION",
-      sensor_id: "MIC-01 (VIRTUAL RECEIVER)",
-      capture_timestamp_iso: new Date(Date.now() - 480000).toISOString(),
-      sample_rate_hz: 44100,
-      sample_count_recorded: 273420,
-      raw_data_path: "data/acoustic/raw/sos_fan_detection_capture.wav",
-      raw_data_exists: true,
-      raw_data_type: "AUDIO_WAV",
-      hash_verified: true,
-      recorded_sha256: "93a1c6e408efb34199c23d0476e31ba8f95c120048e9102c7fb3319082ac5e71",
-      computed_sha256: "93a1c6e408efb34199c23d0476e31ba8f95c120048e9102c7fb3319082ac5e71",
-      samples_verified: true,
-      actual_samples: 273420,
-      timestamp_verified: true,
-      audit_status: "PASS_SIMULATION",
-      failure_reasons: [],
-    },
-    {
-      plot_name: "sos_fan_rpm.png",
-      plot_path: "data/plots/acoustic_spectrogram/sos_fan_rpm.png",
-      metadata_found: true,
-      metadata_path: "data/plots/acoustic_spectrogram/sos_fan_rpm.json",
-      source_mode: "SYNTHETIC SIMULATION",
-      sensor_id: "FAN-SIM-01 (SOFTWARE MODEL)",
-      capture_timestamp_iso: new Date(Date.now() - 500000).toISOString(),
-      sample_rate_hz: 50,
-      sample_count_recorded: 311,
-      raw_data_path: "data/mock_fan/rpm/sos_fan_rpm_timeline.csv",
-      raw_data_exists: true,
-      raw_data_type: "TIMELINE_CSV",
-      hash_verified: true,
-      recorded_sha256: "e102fba7c9284da9349e8971f40d6c934b12638a192837bcde20541990df714a",
-      computed_sha256: "e102fba7c9284da9349e8971f40d6c934b12638a192837bcde20541990df714a",
-      samples_verified: true,
-      actual_samples: 311,
-      timestamp_verified: true,
-      audit_status: "PASS_SIMULATION",
-      failure_reasons: [],
-    },
-  ],
-};
+function toPublicPlotUrl(plotPath: string | undefined, fallbackRel: string, cacheKey: number): string {
+  if (!plotPath) return `/${fallbackRel}?v=${cacheKey}`;
+  const normalized = plotPath.replace(/\\/g, "/");
+  const idx = normalized.indexOf("data/plots/");
+  const rel = idx >= 0 ? normalized.slice(idx) : fallbackRel;
+  return `/${rel}?v=${cacheKey}`;
+}
+
+function getSourceBadgeClass(sourceMode: string | undefined): string {
+  if (sourceMode === "LIVE HARDWARE") {
+    return "bg-emerald-950 text-emerald-300 border border-emerald-700";
+  }
+  if (sourceMode === "RECORDED HARDWARE") {
+    return "bg-amber-950 text-amber-300 border border-amber-700";
+  }
+  if (sourceMode === "SYNTHETIC SIMULATION") {
+    return "bg-cyan-950 text-cyan-300 border border-cyan-800/80";
+  }
+  if (sourceMode === "INVALID") {
+    return "bg-rose-950 text-rose-300 border border-rose-700";
+  }
+  return "bg-slate-800 text-slate-300 border border-slate-700";
+}
+
+function getValidationBadgeClass(status: string | undefined): string {
+  if (status === "VERIFIED") {
+    return "bg-emerald-950 text-emerald-300 border border-emerald-700";
+  }
+  if (status === "PARTIALLY VERIFIED") {
+    return "bg-amber-950 text-amber-300 border border-amber-700";
+  }
+  if (status === "INVALID") {
+    return "bg-rose-950 text-rose-300 border border-rose-700";
+  }
+  return "bg-slate-800 text-slate-300 border border-slate-700";
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"terminal" | "telemetry" | "evidence" | "events" | "docs">("terminal");
@@ -164,26 +133,47 @@ export default function App() {
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [selectedEventLog, setSelectedEventLog] = useState<"rf" | "acoustic" | "morse" | "system">("rf");
   const [simUptime, setSimUptime] = useState<number>(42);
-  const [auditReport, setAuditReport] = useState<AuditSummary>(DEFAULT_AUDIT_REPORT);
+  const [auditReport, setAuditReport] = useState<AuditSummary | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditRefreshCount, setAuditRefreshCount] = useState<number>(() => Date.now());
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [evidenceFilter, setEvidenceFilter] = useState<"all" | "rf" | "acoustic" | "rpm">("all");
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
 
-  // Attempt dynamic load of evidence_audit_report.json
-  useEffect(() => {
-    fetch("/data/evidence_audit_report.json")
+  const loadAuditReport = () => {
+    const bust = Date.now();
+    setAuditRefreshCount(bust);
+    setBrokenImages({});
+    fetch(`/data/evidence_audit_report.json?v=${bust}`)
       .then((res) => {
-        if (res.ok) return res.json();
-        return null;
+        if (!res.ok) {
+          throw new Error(`Audit report HTTP ${res.status}`);
+        }
+        return res.json();
       })
-      .then((data: AuditSummary | null) => {
-        if (data && data.plots && data.plots.length > 0) {
+      .then((data: AuditSummary) => {
+        if (data && Array.isArray(data.plots)) {
           setAuditReport(data);
+          setAuditError(null);
+        } else {
+          setAuditReport(null);
+          setAuditError("Malformed evidence audit report schema.");
         }
       })
       .catch(() => {
-        // Retain verified fallback default
+        setAuditReport(null);
+        setAuditError("No validation report found. Run aetherhound/scripts/verify_evidence.py to validate disk artifacts.");
       });
+  };
+
+  useEffect(() => {
+    loadAuditReport();
   }, []);
+
+  const overallAuditStatus = auditReport?.overall_result ?? "NOT VALIDATED";
+  const rfRecord = auditReport?.plots.find((p) => p.modality === "RF") ?? null;
+  const acousticRecord = auditReport?.plots.find((p) => p.modality === "ACOUSTIC") ?? null;
+  const fanRecord = auditReport?.plots.find((p) => p.modality === "FAN_SIMULATION") ?? null;
 
   // Uptime ticker
   useEffect(() => {
@@ -244,7 +234,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <span className="font-bold tracking-wider text-base text-cyan-400">AETHERHOUND</span>
-              <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">Task ACTIVE</span>
+              <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">WEEK 1 ACTIVE</span>
               <span className="text-xs px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold">
                 SIGINT / HARDWARE SECURITY
               </span>
@@ -347,8 +337,14 @@ export default function App() {
         >
           <BarChart3 className="w-3.5 h-3.5" />
           Signal Plots & Provenance Evidence
-          {auditReport.audit_passed && (
-            <span className="w-2 h-2 rounded-full bg-emerald-400 ml-1"></span>
+          {overallAuditStatus === "VERIFIED" && (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 ml-1" title="Verified"></span>
+          )}
+          {overallAuditStatus === "PARTIALLY VERIFIED" && (
+            <span className="w-2 h-2 rounded-full bg-amber-400 ml-1" title="Partially Verified"></span>
+          )}
+          {overallAuditStatus === "INVALID" && (
+            <span className="w-2 h-2 rounded-full bg-rose-400 ml-1" title="Invalid"></span>
           )}
         </button>
 
@@ -401,7 +397,7 @@ export default function App() {
                   <span className="text-white font-semibold">AIR-GAPPED RF & ACOUSTIC MONITORING</span>
                   {isPaused && <span className="ml-2 text-rose-400 font-bold">[PAUSED]</span>}
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    Mode: Dual-Channel Real-Time SIGINT | Latency: 2.8 ms | Update: 250 ms | Evidence Provenance: VERIFIED
+                    Mode: Dual-Channel Real-Time SIGINT | Latency: 2.8 ms | Update: 250 ms | Evidence Audit: {overallAuditStatus}
                   </div>
                 </div>
 
@@ -685,54 +681,71 @@ export default function App() {
             {/* Header & Honest Audit Status Banner */}
             <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-slate-100">Signal Evidence & Cryptographic Provenance</h3>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-base font-bold text-slate-100">Signal Evidence &amp; Data Provenance Validation</h3>
                     <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                      AUDITED
+                      EVIDENCE VALIDATION
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-1">
-                    Every plot is bound to an immutable raw sample buffer (.npy, .wav, .csv) with verified SHA-256 integrity.
+                    Every plot is traced via JSON metadata to raw buffers (.npy, .wav, .csv) and validated by{" "}
+                    <code className="text-cyan-300">aetherhound/scripts/verify_evidence.py</code>. File-integrity verification confirms
+                    disk schemas, sample counts, and SHA-256 digests; hardware origin is explicitly separated from simulation.
                   </p>
                 </div>
 
                 {/* Honest Audit Status Badge */}
-                <div className="flex items-center gap-3">
-                  {auditReport.audit_passed ? (
+                <div className="flex items-center gap-3 shrink-0">
+                  {overallAuditStatus === "VERIFIED" && auditReport ? (
                     <div className="flex items-center gap-2 bg-emerald-950/70 border border-emerald-500/60 px-3 py-1.5 rounded text-xs text-emerald-300">
-                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                      <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
                       <div>
                         <div className="font-bold flex items-center gap-1.5">
-                          <span>PROVENANCE AUDIT PASSED</span>
+                          <span>FILE INTEGRITY: VERIFIED</span>
                           <span className="text-[10px] px-1 bg-emerald-900 rounded font-normal">
-                            {auditReport.total_passed}/{auditReport.total_plots_audited} VERIFIED
+                            {auditReport.verified_count}/{auditReport.total_plots_audited}
                           </span>
                         </div>
                         <div className="text-[10px] text-emerald-400/80">
-                          {auditReport.hardware_derived_count} Live Hardware | {auditReport.synthetic_simulation_count} Verified Synthetic
+                          {auditReport.hardware_derived_count} Hardware-Attributed | {auditReport.synthetic_simulation_count} Synthetic
+                        </div>
+                      </div>
+                    </div>
+                  ) : overallAuditStatus === "PARTIALLY VERIFIED" && auditReport ? (
+                    <div className="flex items-center gap-2 bg-amber-950/70 border border-amber-500/60 px-3 py-1.5 rounded text-xs text-amber-300">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <div>
+                        <div className="font-bold">PARTIALLY VERIFIED</div>
+                        <div className="text-[10px] text-amber-400/80">
+                          {auditReport.partially_verified_count} warnings | {auditReport.verified_count} verified
+                        </div>
+                      </div>
+                    </div>
+                  ) : overallAuditStatus === "INVALID" && auditReport ? (
+                    <div className="flex items-center gap-2 bg-rose-950/70 border border-rose-500/60 px-3 py-1.5 rounded text-xs text-rose-300">
+                      <AlertOctagon className="w-4 h-4 text-rose-400 shrink-0" />
+                      <div>
+                        <div className="font-bold">VALIDATION FAILED: INVALID</div>
+                        <div className="text-[10px] text-rose-400/80">
+                          {auditReport.failed_or_orphaned_count} failed or untraced artifacts
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 bg-rose-950/70 border border-rose-500/60 px-3 py-1.5 rounded text-xs text-rose-300">
-                      <AlertOctagon className="w-4 h-4 text-rose-400" />
+                    <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700 px-3 py-1.5 rounded text-xs text-slate-300">
+                      <Clock className="w-4 h-4 text-slate-400 shrink-0" />
                       <div>
-                        <div className="font-bold">AUDIT INTEGRITY WARNING</div>
-                        <div className="text-[10px] text-rose-400/80">
-                          {auditReport.failed_or_orphaned_count} plots missing metadata or untraced
+                        <div className="font-bold">NOT VALIDATED</div>
+                        <div className="text-[10px] text-slate-400">
+                          Run aetherhound/scripts/verify_evidence.py to generate report
                         </div>
                       </div>
                     </div>
                   )}
 
                   <button
-                    onClick={() => {
-                      fetch("/data/evidence_audit_report.json")
-                        .then((r) => r.json())
-                        .then((d) => setAuditReport(d))
-                        .catch(() => {});
-                    }}
+                    onClick={loadAuditReport}
                     title="Reload Verification Report"
                     className="p-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
                   >
@@ -741,8 +754,15 @@ export default function App() {
                 </div>
               </div>
 
+              {auditError && (
+                <div className="mt-3 p-2.5 rounded bg-slate-950 border border-slate-800 text-[11px] text-amber-300 flex items-center gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{auditError}</span>
+                </div>
+              )}
+
               {/* Filter Tabs */}
-              <div className="flex gap-2 mt-4 pt-3 border-t border-slate-800 text-xs">
+              <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-slate-800 text-xs">
                 <span className="text-slate-500 self-center mr-1">Filter View:</span>
                 <button
                   onClick={() => setEvidenceFilter("all")}
@@ -750,7 +770,7 @@ export default function App() {
                     evidenceFilter === "all" ? "bg-cyan-950 text-cyan-300 border border-cyan-800 font-semibold" : "text-slate-400 hover:bg-slate-800"
                   }`}
                 >
-                  All Evidence ({auditReport.plots.length})
+                  All Evidence ({auditReport ? auditReport.plots.length : 0})
                 </button>
                 <button
                   onClick={() => setEvidenceFilter("rf")}
@@ -758,7 +778,7 @@ export default function App() {
                     evidenceFilter === "rf" ? "bg-cyan-950 text-cyan-300 border border-cyan-800 font-semibold" : "text-slate-400 hover:bg-slate-800"
                   }`}
                 >
-                  RF Spectrum (1)
+                  RF Spectrum ({auditReport?.plots.filter((p) => p.modality === "RF").length ?? 0})
                 </button>
                 <button
                   onClick={() => setEvidenceFilter("acoustic")}
@@ -766,7 +786,7 @@ export default function App() {
                     evidenceFilter === "acoustic" ? "bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold" : "text-slate-400 hover:bg-slate-800"
                   }`}
                 >
-                  Acoustic Stream (1)
+                  Acoustic Stream ({auditReport?.plots.filter((p) => p.modality === "ACOUSTIC").length ?? 0})
                 </button>
                 <button
                   onClick={() => setEvidenceFilter("rpm")}
@@ -774,7 +794,7 @@ export default function App() {
                     evidenceFilter === "rpm" ? "bg-purple-950 text-purple-300 border border-purple-800 font-semibold" : "text-slate-400 hover:bg-slate-800"
                   }`}
                 >
-                  Fan RPM Timeline (1)
+                  Fan RPM Timeline ({auditReport?.plots.filter((p) => p.modality === "FAN_SIMULATION").length ?? 0})
                 </button>
               </div>
             </div>
@@ -783,89 +803,113 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               {/* Card 1: RF Spectrum Snapshot */}
               {(evidenceFilter === "all" || evidenceFilter === "rf") && (
-                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between overflow-hidden">
+                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between overflow-hidden min-w-0">
                   <div>
-                    {/* Header with Source Badge */}
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                      <div className="flex items-center gap-2">
-                        <Radio className="w-4 h-4 text-cyan-400" />
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Radio className="w-4 h-4 text-cyan-400 shrink-0" />
                         <span className="font-bold text-slate-100 text-xs">Calibrated RF Power Spectrum</span>
                       </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded font-bold tracking-wider bg-slate-800 text-cyan-300 border border-cyan-800/80">
-                        SYNTHETIC SIMULATION
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${getSourceBadgeClass(rfRecord?.source_mode)}`}>
+                          {rfRecord?.source_mode ?? "NOT VALIDATED"}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${getValidationBadgeClass(rfRecord?.validation_status)}`}>
+                          {rfRecord?.validation_status ?? "NOT VALIDATED"}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Sensor & Provenance Meta Banner */}
-                    <div className="bg-slate-950/80 p-2.5 rounded border border-slate-800/80 my-3 text-[11px] space-y-1 font-mono">
-                      <div className="flex justify-between">
+                    <div className="bg-slate-950/80 p-2.5 rounded border border-slate-800/80 my-3 text-[11px] space-y-1.5 font-mono">
+                      <div className="flex flex-wrap justify-between gap-x-2">
+                        <span className="text-slate-400">Capture ID:</span>
+                        <span className="text-slate-200 break-all">{rfRecord?.capture_id ?? "NOT VALIDATED"}</span>
+                      </div>
+                      <div className="flex flex-wrap justify-between gap-x-2">
                         <span className="text-slate-400">Sensor ID:</span>
-                        <span className="text-cyan-300 font-semibold">SDR-01 (SYNTHETIC IQ BUFFER)</span>
+                        <span className="text-cyan-300 font-semibold break-all">{rfRecord?.sensor_id ?? "UNBOUND / NOT VALIDATED"}</span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Center Freq:</span>
-                        <span className="text-slate-200">433.920 MHz (ISM)</span>
+                      <div className="flex flex-wrap justify-between gap-x-2">
+                        <span className="text-slate-400">Capture Timestamp:</span>
+                        <span className="text-slate-200 break-all">{rfRecord?.capture_timestamp_iso || "NOT VALIDATED"}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex flex-wrap justify-between gap-x-2">
                         <span className="text-slate-400">Sampling Rate:</span>
-                        <span className="text-slate-200">2,048,000 samples/sec</span>
+                        <span className="text-slate-200">
+                          {rfRecord?.sample_rate_hz ? `${rfRecord.sample_rate_hz.toLocaleString()} Hz` : "NOT VALIDATED"}
+                        </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Raw Samples:</span>
-                        <span className="text-emerald-400 font-medium">40,960 IQ complex pairs (20.0 ms)</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Noise Floor (MAD):</span>
-                        <span className="text-amber-400 font-medium">-57.9 dBFS</span>
+                      <div className="flex flex-wrap justify-between gap-x-2">
+                        <span className="text-slate-400">Verified IQ Samples:</span>
+                        <span className={rfRecord?.samples_verified ? "text-emerald-400 font-medium" : "text-slate-400"}>
+                          {rfRecord ? `${rfRecord.actual_samples.toLocaleString()} / ${rfRecord.sample_count_recorded.toLocaleString()}` : "NOT VALIDATED"}
+                        </span>
                       </div>
                     </div>
 
+                    {rfRecord?.hardware_provenance_note && (
+                      <div className="mb-3 p-2 rounded bg-slate-950 border border-slate-800 text-[10px] text-slate-300 leading-relaxed">
+                        {rfRecord.hardware_provenance_note}
+                      </div>
+                    )}
+
                     {/* Plot Image Container with Anti-Overflow */}
-                    <div className="w-full bg-black rounded border border-slate-800 overflow-hidden relative group">
-                      <img
-                        src="/data/plots/rf_spectrum/synthetic_rf_anomaly.png"
-                        alt="Calibrated RF Spectrum"
-                        className="w-full h-auto max-h-[300px] object-contain mx-auto"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = "none";
-                        }}
-                      />
-                      <div className="p-3 text-center bg-slate-950 border-t border-slate-800/60">
-                        <span className="text-rose-400 font-bold text-xs">
-                          Detected Anomaly Spike: 434.070 MHz (+150 kHz Offset, +55.4 dB over noise)
-                        </span>
+                    <div className="w-full bg-black rounded border border-slate-800 overflow-hidden relative">
+                      {!brokenImages["rf"] ? (
+                        <img
+                          src={toPublicPlotUrl(rfRecord?.plot_path, "data/plots/rf_spectrum/synthetic_rf_anomaly.png", auditRefreshCount)}
+                          alt="Calibrated RF Spectrum"
+                          className="w-full h-auto max-h-[300px] object-contain mx-auto"
+                          onError={() => setBrokenImages((prev) => ({ ...prev, rf: true }))}
+                        />
+                      ) : (
+                        <div className="p-6 text-center text-xs text-slate-500">
+                          RF plot artifact not yet generated or missing on disk.
+                        </div>
+                      )}
+                      <div className="p-2.5 text-center bg-slate-950 border-t border-slate-800/60 text-[11px] text-slate-300">
+                        {rfRecord
+                          ? `Bound Plot: ${rfRecord.plot_name} | Acquisition Mode: ${rfRecord.acquisition_mode}`
+                          : "Run verification script to bind RF capture plot & metadata"}
                       </div>
                     </div>
                   </div>
 
                   {/* Raw Data Binding & Cryptographic SHA256 */}
                   <div className="pt-2 border-t border-slate-800 text-[10px] space-y-1">
-                    <div className="flex items-center justify-between text-slate-400">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-slate-400">
                       <span className="flex items-center gap-1">
                         <Database className="w-3 h-3 text-cyan-400" /> Raw Buffer:
                       </span>
-                      <span className="font-semibold text-slate-300">data/rf/raw/synthetic_rf_anomaly_iq.npy</span>
+                      <span className="font-semibold text-slate-300 break-all">
+                        {rfRecord?.raw_data_path ? rfRecord.raw_data_path.replace(/\\/g, "/").split("/").slice(-3).join("/") : "NOT VALIDATED"}
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between text-slate-400">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-slate-400">
                       <span className="flex items-center gap-1">
                         <Hash className="w-3 h-3 text-purple-400" /> SHA-256 Digest:
                       </span>
-                      <div className="flex items-center gap-1">
-                        <span className="font-mono text-slate-300 truncate max-w-[190px]">
-                          7f4c9a8e2b1093df67ac4019...
-                        </span>
-                        <button
-                          onClick={() => copyToClipboard("7f4c9a8e2b1093df67ac4019ba22e75dc901e4a3c1f6b57d09ea73bc110f4492")}
-                          className="hover:text-cyan-400 p-0.5"
-                          title="Copy Full SHA-256"
-                        >
-                          {copiedHash === "7f4c9a8e2b1093df67ac4019ba22e75dc901e4a3c1f6b57d09ea73bc110f4492" ? (
-                            <Check className="w-3 h-3 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                        </button>
-                      </div>
+                      {rfRecord?.computed_sha256 ? (
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono text-slate-300">
+                            {rfRecord.computed_sha256.slice(0, 20)}...
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(rfRecord.computed_sha256)}
+                            className="hover:text-cyan-400 p-0.5"
+                            title="Copy Full SHA-256"
+                          >
+                            {copiedHash === rfRecord.computed_sha256 ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-slate-500">NOT VALIDATED</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -873,91 +917,113 @@ export default function App() {
 
               {/* Card 2: Acoustic Stream Waveform & Extracted Envelope */}
               {(evidenceFilter === "all" || evidenceFilter === "acoustic") && (
-                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between overflow-hidden">
+                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between overflow-hidden min-w-0">
                   <div>
-                    {/* Header with Source Badge */}
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                      <div className="flex items-center gap-2">
-                        <Mic className="w-4 h-4 text-emerald-400" />
-                        <span className="font-bold text-slate-100 text-xs">Acquired Acoustic Waveform & Pulse Envelope</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Mic className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span className="font-bold text-slate-100 text-xs">Acquired Acoustic Waveform &amp; Envelope</span>
                       </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded font-bold tracking-wider bg-slate-800 text-emerald-300 border border-emerald-800/80">
-                        SYNTHETIC SIMULATION
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${getSourceBadgeClass(acousticRecord?.source_mode)}`}>
+                          {acousticRecord?.source_mode ?? "NOT VALIDATED"}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${getValidationBadgeClass(acousticRecord?.validation_status)}`}>
+                          {acousticRecord?.validation_status ?? "NOT VALIDATED"}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Sensor & Provenance Meta Banner */}
-                    <div className="bg-slate-950/80 p-2.5 rounded border border-slate-800/80 my-3 text-[11px] space-y-1 font-mono">
-                      <div className="flex justify-between">
+                    <div className="bg-slate-950/80 p-2.5 rounded border border-slate-800/80 my-3 text-[11px] space-y-1.5 font-mono">
+                      <div className="flex flex-wrap justify-between gap-x-2">
+                        <span className="text-slate-400">Capture ID:</span>
+                        <span className="text-slate-200 break-all">{acousticRecord?.capture_id ?? "NOT VALIDATED"}</span>
+                      </div>
+                      <div className="flex flex-wrap justify-between gap-x-2">
                         <span className="text-slate-400">Sensor ID:</span>
-                        <span className="text-emerald-300 font-semibold">MIC-01 (VIRTUAL RECEIVER)</span>
+                        <span className="text-emerald-300 font-semibold break-all">{acousticRecord?.sensor_id ?? "UNBOUND / NOT VALIDATED"}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex flex-wrap justify-between gap-x-2">
+                        <span className="text-slate-400">Capture Timestamp:</span>
+                        <span className="text-slate-200 break-all">{acousticRecord?.capture_timestamp_iso || "NOT VALIDATED"}</span>
+                      </div>
+                      <div className="flex flex-wrap justify-between gap-x-2">
                         <span className="text-slate-400">Sampling Rate:</span>
-                        <span className="text-slate-200">44,100 Hz (16-bit Float Stream)</span>
+                        <span className="text-slate-200">
+                          {acousticRecord?.sample_rate_hz ? `${acousticRecord.sample_rate_hz.toLocaleString()} Hz` : "NOT VALIDATED"}
+                        </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Buffer Samples:</span>
-                        <span className="text-emerald-400 font-medium">273,420 audio frames (6.20s capture)</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Decoded Pattern:</span>
-                        <span className="text-purple-300 font-bold">SOS (... --- ...) | 89.0% Confidence</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Data Source Separation:</span>
-                        <span className="text-slate-300 text-[10px]">Captured stream buffer (isolated from generator WAV)</span>
+                      <div className="flex flex-wrap justify-between gap-x-2">
+                        <span className="text-slate-400">Verified Frames:</span>
+                        <span className={acousticRecord?.samples_verified ? "text-emerald-400 font-medium" : "text-slate-400"}>
+                          {acousticRecord ? `${acousticRecord.actual_samples.toLocaleString()} / ${acousticRecord.sample_count_recorded.toLocaleString()}` : "NOT VALIDATED"}
+                        </span>
                       </div>
                     </div>
 
+                    {acousticRecord?.hardware_provenance_note && (
+                      <div className="mb-3 p-2 rounded bg-slate-950 border border-slate-800 text-[10px] text-slate-300 leading-relaxed">
+                        {acousticRecord.hardware_provenance_note}
+                      </div>
+                    )}
+
                     {/* Plot Image Container with Anti-Overflow */}
-                    <div className="w-full bg-black rounded border border-slate-800 overflow-hidden relative group">
-                      <img
-                        src="/data/plots/acoustic_waveform/sos_fan_detection.png"
-                        alt="Acoustic Waveform & Pulse Envelope"
-                        className="w-full h-auto max-h-[300px] object-contain mx-auto"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = "none";
-                        }}
-                      />
-                      <div className="p-3 text-center bg-slate-950 border-t border-slate-800/60">
-                        <span className="text-emerald-400 font-bold text-xs">
-                          Causal Streaming Envelope Follower with Schmitt Trigger Pulse Recognition
-                        </span>
+                    <div className="w-full bg-black rounded border border-slate-800 overflow-hidden relative">
+                      {!brokenImages["acoustic"] ? (
+                        <img
+                          src={toPublicPlotUrl(acousticRecord?.plot_path, "data/plots/acoustic_waveform/sos_fan_detection.png", auditRefreshCount)}
+                          alt="Acoustic Waveform & Pulse Envelope"
+                          className="w-full h-auto max-h-[300px] object-contain mx-auto"
+                          onError={() => setBrokenImages((prev) => ({ ...prev, acoustic: true }))}
+                        />
+                      ) : (
+                        <div className="p-6 text-center text-xs text-slate-500">
+                          Acoustic plot artifact not yet generated or missing on disk.
+                        </div>
+                      )}
+                      <div className="p-2.5 text-center bg-slate-950 border-t border-slate-800/60 text-[11px] text-slate-300">
+                        {acousticRecord
+                          ? `Bound Plot: ${acousticRecord.plot_name} | Acquisition Mode: ${acousticRecord.acquisition_mode}`
+                          : "Run verification script to bind acoustic waveform plot & metadata"}
                       </div>
                     </div>
                   </div>
 
                   {/* Raw Data Binding & Cryptographic SHA256 */}
                   <div className="pt-2 border-t border-slate-800 text-[10px] space-y-1">
-                    <div className="flex items-center justify-between text-slate-400">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-slate-400">
                       <span className="flex items-center gap-1">
                         <Database className="w-3 h-3 text-emerald-400" /> Captured Raw Stream:
                       </span>
-                      <span className="font-semibold text-slate-300 truncate max-w-[210px]">
-                        data/acoustic/raw/sos_fan_detection_capture.wav
+                      <span className="font-semibold text-slate-300 break-all">
+                        {acousticRecord?.raw_data_path ? acousticRecord.raw_data_path.replace(/\\/g, "/").split("/").slice(-3).join("/") : "NOT VALIDATED"}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between text-slate-400">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-slate-400">
                       <span className="flex items-center gap-1">
                         <Hash className="w-3 h-3 text-purple-400" /> SHA-256 Digest:
                       </span>
-                      <div className="flex items-center gap-1">
-                        <span className="font-mono text-slate-300 truncate max-w-[190px]">
-                          93a1c6e408efb34199c2...
-                        </span>
-                        <button
-                          onClick={() => copyToClipboard("93a1c6e408efb34199c23d0476e31ba8f95c120048e9102c7fb3319082ac5e71")}
-                          className="hover:text-cyan-400 p-0.5"
-                          title="Copy Full SHA-256"
-                        >
-                          {copiedHash === "93a1c6e408efb34199c23d0476e31ba8f95c120048e9102c7fb3319082ac5e71" ? (
-                            <Check className="w-3 h-3 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                        </button>
-                      </div>
+                      {acousticRecord?.computed_sha256 ? (
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono text-slate-300">
+                            {acousticRecord.computed_sha256.slice(0, 20)}...
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(acousticRecord.computed_sha256)}
+                            className="hover:text-cyan-400 p-0.5"
+                            title="Copy Full SHA-256"
+                          >
+                            {copiedHash === acousticRecord.computed_sha256 ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-slate-500">NOT VALIDATED</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -965,51 +1031,72 @@ export default function App() {
 
               {/* Card 3: Fan RPM Morse Timeline (Full Width) */}
               {(evidenceFilter === "all" || evidenceFilter === "rpm") && (
-                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 lg:col-span-2 overflow-hidden">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                    <div className="flex items-center gap-2">
-                      <Cpu className="w-4 h-4 text-purple-400" />
-                      <span className="font-bold text-slate-100 text-xs">Fan RPM Speed Trajectory & Morse Keying Timeline</span>
+                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 lg:col-span-2 overflow-hidden min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Cpu className="w-4 h-4 text-purple-400 shrink-0" />
+                      <span className="font-bold text-slate-100 text-xs">Fan RPM Speed Trajectory &amp; Morse Keying Timeline</span>
                     </div>
-                    <span className="text-[10px] px-2 py-0.5 rounded font-bold tracking-wider bg-amber-950/80 text-amber-300 border border-amber-800">
-                      BENIGN SOFTWARE SIMULATION
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${getSourceBadgeClass(fanRecord?.source_mode ?? "NOT VALIDATED")}`}>
+                        {fanRecord?.source_mode ?? "NOT VALIDATED"}
+                      </span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${getValidationBadgeClass(fanRecord?.validation_status)}`}>
+                        {fanRecord?.validation_status ?? "NOT VALIDATED"}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Explicit Disclaimer Alert */}
                   <div className="p-2.5 rounded bg-amber-950/30 border border-amber-800/60 text-[11px] text-amber-300/90 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                     <div>
-                      <strong className="text-amber-200">Hardware Authenticity Notice:</strong> This trajectory is a theoretical mathematical model of fan speed aerodynamics. Tachometer measurements are NOT attached in this lab environment. No physical motherboard thermal controls were modified.
+                      <strong className="text-amber-200">Simulated RPM Notice:</strong> This trajectory is a synthetic software model of fan RPM keying. No physical motherboard tachometer hardware measurements are recorded here.
                     </div>
                   </div>
 
                   {/* Plot Container */}
                   <div className="w-full bg-black rounded border border-slate-800 overflow-hidden relative">
-                    <img
-                      src="/data/plots/acoustic_spectrogram/sos_fan_rpm.png"
-                      alt="Fan RPM Trajectory Simulation"
-                      className="w-full h-auto max-h-[340px] object-contain mx-auto"
-                      onError={(e) => {
-                        (e.target as HTMLElement).style.display = "none";
-                      }}
-                    />
+                    {!brokenImages["fan"] ? (
+                      <img
+                        src={toPublicPlotUrl(fanRecord?.plot_path, "data/plots/acoustic_spectrogram/sos_fan_rpm.png", auditRefreshCount)}
+                        alt="Fan RPM Trajectory Simulation"
+                        className="w-full h-auto max-h-[340px] object-contain mx-auto"
+                        onError={() => setBrokenImages((prev) => ({ ...prev, fan: true }))}
+                      />
+                    ) : (
+                      <div className="p-6 text-center text-xs text-slate-500">
+                        Fan RPM trajectory plot not yet generated or missing on disk.
+                      </div>
+                    )}
                   </div>
 
                   {/* Provenance Metadata Details */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 text-[11px] font-mono">
-                    <div className="p-2 bg-slate-950 rounded border border-slate-800">
-                      <span className="text-slate-500 text-[10px]">Timeline Sample Rate:</span>
-                      <div className="text-slate-200 font-semibold mt-0.5">50.0 Hz (20 ms interpolation)</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 text-[11px] font-mono">
+                    <div className="p-2 bg-slate-950 rounded border border-slate-800 min-w-0">
+                      <span className="text-slate-500 text-[10px]">Capture ID / Sensor:</span>
+                      <div className="text-slate-200 font-semibold mt-0.5 break-all">
+                        {fanRecord ? `${fanRecord.capture_id} (${fanRecord.sensor_id})` : "NOT VALIDATED"}
+                      </div>
                     </div>
-                    <div className="p-2 bg-slate-950 rounded border border-slate-800">
-                      <span className="text-slate-500 text-[10px]">Speed Envelope:</span>
-                      <div className="text-cyan-400 font-semibold mt-0.5">1,200 Idle → 1,800 High RPM</div>
+                    <div className="p-2 bg-slate-950 rounded border border-slate-800 min-w-0">
+                      <span className="text-slate-500 text-[10px]">Capture Timestamp:</span>
+                      <div className="text-slate-200 font-semibold mt-0.5 break-all">
+                        {fanRecord?.capture_timestamp_iso || "NOT VALIDATED"}
+                      </div>
                     </div>
-                    <div className="p-2 bg-slate-950 rounded border border-slate-800">
+                    <div className="p-2 bg-slate-950 rounded border border-slate-800 min-w-0">
+                      <span className="text-slate-500 text-[10px]">Timeline Sample Rate / Points:</span>
+                      <div className="text-cyan-400 font-semibold mt-0.5">
+                        {fanRecord
+                          ? `${fanRecord.sample_rate_hz} Hz (${fanRecord.actual_samples.toLocaleString()} pts)`
+                          : "NOT VALIDATED"}
+                      </div>
+                    </div>
+                    <div className="p-2 bg-slate-950 rounded border border-slate-800 min-w-0">
                       <span className="text-slate-500 text-[10px]">Raw CSV Timeline:</span>
-                      <div className="text-slate-300 font-semibold mt-0.5 truncate">
-                        data/mock_fan/rpm/sos_fan_rpm_timeline.csv
+                      <div className="text-slate-300 font-semibold mt-0.5 break-all">
+                        {fanRecord?.raw_data_path ? fanRecord.raw_data_path.replace(/\\/g, "/").split("/").slice(-3).join("/") : "NOT VALIDATED"}
                       </div>
                     </div>
                   </div>
@@ -1019,71 +1106,75 @@ export default function App() {
 
             {/* Evidence Audit Ledger Table */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
                 <div className="flex items-center gap-2">
                   <Database className="w-4 h-4 text-cyan-400" />
                   <span className="font-bold text-slate-100 text-xs">Complete Evidence Integrity Ledger</span>
                 </div>
-                <span className="text-[10px] text-slate-400">Audited via scripts/verify_evidence.py</span>
+                <span className="text-[10px] text-slate-400">
+                  {auditReport ? `Last Audited: ${auditReport.audit_timestamp_iso}` : "Status: NOT VALIDATED"}
+                </span>
               </div>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs font-mono">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
-                      <th className="py-2 px-2">Plot File</th>
-                      <th className="py-2 px-2">Source Mode</th>
-                      <th className="py-2 px-2">Sensor Binding</th>
-                      <th className="py-2 px-2">Raw Buffer</th>
-                      <th className="py-2 px-2">SHA-256 Check</th>
-                      <th className="py-2 px-2 text-right">Sample Count</th>
-                      <th className="py-2 px-2 text-right">Audit Status</th>
+                      <th className="py-2 px-2">Capture ID</th>
+                      <th className="py-2 px-2">Plot / Artifact</th>
+                      <th className="py-2 px-2">Source Label</th>
+                      <th className="py-2 px-2">Sensor ID</th>
+                      <th className="py-2 px-2">Timestamp</th>
+                      <th className="py-2 px-2 text-right">Sample Rate</th>
+                      <th className="py-2 px-2 text-right">Samples</th>
+                      <th className="py-2 px-2">SHA-256</th>
+                      <th className="py-2 px-2 text-right">Validation Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {auditReport.plots.map((p, idx) => (
-                      <tr key={idx} className="hover:bg-slate-800/30">
-                        <td className="py-2.5 px-2 text-cyan-300 font-medium">{p.plot_name}</td>
-                        <td className="py-2.5 px-2">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                            p.source_mode === "LIVE HARDWARE"
-                              ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                              : "bg-slate-800 text-slate-300 border border-slate-700"
-                          }`}>
-                            {p.source_mode}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-2 text-slate-300">{p.sensor_id}</td>
-                        <td className="py-2.5 px-2 text-slate-400 truncate max-w-[160px]" title={p.raw_data_path}>
-                          {p.raw_data_path.split("/").pop()}
-                        </td>
-                        <td className="py-2.5 px-2">
-                          {p.hash_verified ? (
-                            <span className="text-emerald-400 font-bold flex items-center gap-1">
-                              <CheckCircle2 className="w-3 h-3" /> MATCH
-                            </span>
-                          ) : (
-                            <span className="text-rose-400 font-bold flex items-center gap-1">
-                              <AlertOctagon className="w-3 h-3" /> MISMATCH
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-2 text-right text-slate-300">
-                          {p.actual_samples.toLocaleString()}
-                        </td>
-                        <td className="py-2.5 px-2 text-right">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            p.audit_status === "PASS_HARDWARE"
-                              ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                              : p.audit_status === "PASS_SIMULATION"
-                              ? "bg-cyan-950 text-cyan-300 border border-cyan-800"
-                              : "bg-rose-950 text-rose-300 border border-rose-800"
-                          }`}>
-                            {p.audit_status.replace("_", " ")}
-                          </span>
+                    {!auditReport || auditReport.plots.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-6 text-center text-slate-400 text-xs">
+                          No evidence validation report loaded. Run <code className="text-cyan-300">python .\aetherhound\scripts\verify_evidence.py</code> and click refresh.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      auditReport.plots.map((p, idx) => (
+                        <tr key={idx} className="hover:bg-slate-800/30">
+                          <td className="py-2.5 px-2 text-slate-300 whitespace-nowrap">{p.capture_id}</td>
+                          <td className="py-2.5 px-2 text-cyan-300 font-medium whitespace-nowrap">{p.plot_name}</td>
+                          <td className="py-2.5 px-2 whitespace-nowrap">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${getSourceBadgeClass(p.source_mode)}`}>
+                              {p.source_mode}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-2 text-slate-300 whitespace-nowrap">{p.sensor_id}</td>
+                          <td className="py-2.5 px-2 text-slate-400 whitespace-nowrap">{p.capture_timestamp_iso || "N/A"}</td>
+                          <td className="py-2.5 px-2 text-right text-slate-300 whitespace-nowrap">
+                            {p.sample_rate_hz ? `${p.sample_rate_hz.toLocaleString()} Hz` : "N/A"}
+                          </td>
+                          <td className="py-2.5 px-2 text-right text-slate-300 whitespace-nowrap">
+                            {p.actual_samples.toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-2 whitespace-nowrap">
+                            {p.hash_verified ? (
+                              <span className="text-emerald-400 font-bold flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" /> MATCH
+                              </span>
+                            ) : (
+                              <span className="text-rose-400 font-bold flex items-center gap-1">
+                                <AlertOctagon className="w-3 h-3" /> {p.recorded_sha256 ? "MISMATCH" : "MISSING"}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-2 text-right whitespace-nowrap">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${getValidationBadgeClass(p.validation_status)}`}>
+                              {p.validation_status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1169,7 +1260,7 @@ export default function App() {
 {`{"timestamp": 1794469000.12, "iso_time": "2026-11-12T07:35:50Z", "action": "EngineStarted", "details": "AetherHound dual-channel monitoring active"}
 {"timestamp": 1794469140.55, "iso_time": "2026-11-12T07:38:10Z", "action": "OptionB_AcousticTestExecuted", "details": "Streaming receiver captured SOS Morse, envelope extracted, match score 89.0%"}
 {"timestamp": 1794469285.80, "iso_time": "2026-11-12T07:41:25Z", "action": "OptionC_SoftwareTestExecuted", "details": "Synthetic narrowband RF carrier detected, raw IQ saved, cryptographic SHA-256 bound"}
-{"timestamp": 1794469310.20, "iso_time": "2026-11-12T07:45:00Z", "action": "EvidenceAuditExecuted", "details": "scripts/verify_evidence.py completed: 3/3 plots validated against raw buffers"}`}
+{"timestamp": 1794469310.20, "iso_time": "2026-11-12T07:45:00Z", "action": "EvidenceAuditExecuted", "details": "aetherhound/scripts/verify_evidence.py completed: 3/3 plots validated against raw buffers"}`}
                 </pre>
               )}
             </div>
@@ -1189,7 +1280,7 @@ export default function App() {
                 Run the dedicated verification suite to cryptographically validate all plot figures against their underlying raw acquisition buffers (.npy, .wav, .csv).
               </p>
               <pre className="p-3 bg-black rounded text-cyan-300 border border-slate-800 text-xs overflow-x-auto">
-                python3 scripts/verify_evidence.py
+                python .\aetherhound\scripts\verify_evidence.py
               </pre>
               <div className="text-[11px] text-slate-400">
                 Audits: raw buffer existence, sample count matches, timestamp ordering, and bit-level SHA-256 hash digests.
@@ -1200,13 +1291,17 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                 <div className="flex items-center gap-2 text-cyan-400 font-bold">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                  Unit & Integration Test Suite Status
+                  Unit &amp; Integration Test Suite Modules
                 </div>
-                <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold text-xs">
-                  15 / 15 TESTS PASSED (100%)
+                <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-semibold text-xs">
+                  7 TEST MODULES (pytest)
                 </span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="p-3 bg-slate-950 rounded border border-slate-800 space-y-1">
+                  <div className="text-emerald-400 font-semibold">aetherhound/tests/test_evidence_provenance.py</div>
+                  <div className="text-slate-400">Day 1 metadata schema, missing files, sample mismatch, SHA-256 tamper &amp; source rules (7 tests)</div>
+                </div>
                 <div className="p-3 bg-slate-950 rounded border border-slate-800 space-y-1">
                   <div className="text-emerald-400 font-semibold">aetherhound/tests/test_morse_encoder.py</div>
                   <div className="text-slate-400">SOS encoding, element/letter/word gaps, timing durations (4 tests)</div>
@@ -1225,11 +1320,11 @@ export default function App() {
                 </div>
                 <div className="p-3 bg-slate-950 rounded border border-slate-800 space-y-1">
                   <div className="text-emerald-400 font-semibold">aetherhound/tests/test_morse_detector.py</div>
-                  <div className="text-slate-400">Streaming real-time SOS pattern detection & incorrect sequence rejection (2 tests)</div>
+                  <div className="text-slate-400">Streaming real-time SOS pattern detection &amp; incorrect sequence rejection (2 tests)</div>
                 </div>
                 <div className="p-3 bg-slate-950 rounded border border-slate-800 space-y-1">
                   <div className="text-emerald-400 font-semibold">aetherhound/tests/test_realtime_engine.py</div>
-                  <div className="text-slate-400">Dual-channel lifecycle, pause/resume, telemetry & JSONL logging (1 test)</div>
+                  <div className="text-slate-400">Dual-channel lifecycle, pause/resume, telemetry &amp; JSONL logging (1 test)</div>
                 </div>
               </div>
             </div>
@@ -1284,7 +1379,7 @@ export default function App() {
           <span>Rich 15.0</span>
         </div>
         <div className="text-slate-400 flex items-center gap-2">
-          <span>AetherHound SIGINT Audit</span>
+          <span>AetherHound Week 1 SIGINT Audit</span>
           <span>•</span>
           <span className="text-cyan-400">Cryptographic Provenance Binding Active</span>
         </div>

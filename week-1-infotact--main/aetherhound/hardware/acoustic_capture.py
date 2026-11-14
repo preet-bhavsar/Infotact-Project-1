@@ -144,8 +144,13 @@ class AcousticCaptureDevice:
             self._recording_buffer = []
             self._is_recording = True
 
-    def stop_and_save_recording(self, file_path: str) -> bool:
-        """Stop accumulating and save recorded audio to a WAV file."""
+    def stop_and_save_recording(
+        self,
+        file_path: str,
+        metadata_path: Optional[str] = None,
+        sensor_id: str = "MIC-01",
+    ) -> bool:
+        """Stop accumulating, save recorded audio to WAV, and write Day 1 acoustic provenance JSON."""
         with self._recording_lock:
             self._is_recording = False
             if not self._recording_buffer:
@@ -155,6 +160,36 @@ class AcousticCaptureDevice:
 
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
         sf.write(file_path, data, self.config.sample_rate_hz)
+
+        from aetherhound.core.evidence_metadata import (
+            SOURCE_TYPE_LIVE_HARDWARE,
+            SOURCE_TYPE_SYNTHETIC_SIMULATION,
+            build_acoustic_metadata,
+            compute_file_sha256,
+            save_metadata,
+        )
+
+        is_syn = bool(self.synthetic_mode)
+        source_type = SOURCE_TYPE_SYNTHETIC_SIMULATION if is_syn else SOURCE_TYPE_LIVE_HARDWARE
+        acq_mode = (
+            "Synthetic Acoustic Receiver Stream"
+            if is_syn
+            else "PyAudio Non-Blocking Microphone Stream"
+        )
+        meta_out = metadata_path or (os.path.splitext(file_path)[0] + ".json")
+        meta = build_acoustic_metadata(
+            sensor_id=f"{sensor_id} (VIRTUAL RECEIVER)" if is_syn else sensor_id,
+            source_type=source_type,
+            sample_rate_hz=self.config.sample_rate_hz,
+            channels=self.config.channels,
+            audio_format=self.config.audio_format,
+            sample_count=len(data),
+            data_file=file_path,
+            acquisition_mode=acq_mode,
+            data_sha256=compute_file_sha256(file_path),
+        )
+        save_metadata(meta, meta_out)
+        self._last_recording_metadata = meta
         return True
 
     def _init_hardware_stream(self) -> bool:
