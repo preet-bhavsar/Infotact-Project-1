@@ -66,3 +66,9 @@ def test_accelerated_dsp_engine():
     bench = engine.benchmark_latency(iterations=100)
     assert bench["avg_latency_microseconds"] < 1000.0  # Sub-millisecond
     assert bench["max_theoretical_fps"] > 30.0
+
+
+def test_mad_noise_floor():
+    psd_db = np.array([-80.0, -82.0, -79.0, -81.0, -40.0], dtype=np.float32)
+    noise_floor = SignalFeatureDetector.calculate_mad_noise_floor(psd_db)
+    assert -82.0 <= noise_floor <= -75.0

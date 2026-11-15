@@ -85,3 +85,14 @@ class SignalFeatureDetector:
             "kurtosis": kurtosis,
             "top_peaks": peaks
         }
+
+
+    @staticmethod
+    def calculate_mad_noise_floor(signal_power_db: np.ndarray) -> float:
+        """
+        Estimate noise floor using robust Median Absolute Deviation (MAD).
+        sigma_noise = 1.4826 * median(|P_dB - median(P_dB)|)
+        """
+        med = float(np.median(signal_power_db))
+        mad = float(np.median(np.abs(signal_power_db - med)))
+        return med + (1.4826 * mad)
