@@ -282,3 +282,19 @@ data/
 1. **RTL-SDR Bandwidth:** RTL-SDR is bandwidth-limited to $\le 2.4$ MHz stable bandwidth. Wideband RF exfiltration across multiple GHz requires frequency stepping.
 2. **Receive-Only Operation:** AetherHound is an authorized surveillance and defense sensor; it does not and cannot transmit RF signals.
 3. **Microphone Frequency Cutoff:** Standard electret USB microphones typically roll off steeply above 20 kHz. Ultrasonic covert channels ($>22$ kHz) require dedicated high-sample-rate ultrasonic acoustic transducers (e.g. 96 kHz or 192 kHz).
+
+---
+
+## 19. Live Web Detection Dashboard
+
+The React dashboard polls a loopback-only Python API backed by the existing `RealtimeEngine`. Start the API and frontend from the project root in separate terminals:
+
+```bash
+# Terminal 1: Python API and detector integration
+python -m aetherhound.api
+
+# Terminal 2: React dashboard
+npm run dev
+```
+
+Open `http://localhost:3000`. Use the dashboard controls to start, pause, resume, or stop monitoring. The API does not enable synthetic acquisition as a fallback; disconnected devices and unavailable metrics are reported as such. Recent detections are read from the existing `data/events/*.jsonl` files and updated from real detector callbacks.
