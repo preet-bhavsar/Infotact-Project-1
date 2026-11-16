@@ -32,14 +32,13 @@ import {
   Clock,
   AlertOctagon,
 } from "lucide-react";
-
-interface EventItem {
-  timestamp: string;
-  sensor: string;
-  event: string;
-  evidence: string;
-  level: "info" | "warning" | "alert";
-}
+import {
+  fetchMonitoringSnapshot,
+  sendMonitoringAction,
+  type DetectionRecord,
+  type MonitoringAction,
+  type MonitoringSnapshot,
+} from "./monitoringApi";
 
 interface PlotAuditRecord {
   capture_id: string;
@@ -127,12 +126,38 @@ function getValidationBadgeClass(status: string | undefined): string {
   return "bg-slate-800 text-slate-300 border border-slate-700";
 }
 
+function formatMonitoringTimestamp(timestamp: string | null | undefined): string {
+  if (!timestamp) return "N/A";
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.getTime()) ? "N/A" : parsed.toLocaleString();
+}
+
+function getNumericMetric(record: DetectionRecord | undefined, key: string): number | null {
+  const value = record?.metrics[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatNumber(value: number | null | undefined, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString(undefined, { maximumFractionDigits: digits })
+    : "N/A";
+}
+
+function summarizeMetrics(metrics: DetectionRecord["metrics"]): string {
+  const entries = Object.entries(metrics);
+  if (!entries.length) return "N/A";
+  return entries
+    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${typeof value === "number" ? value.toLocaleString(undefined, { maximumFractionDigits: 4 }) : value}`)
+    .join(" · ");
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<"terminal" | "telemetry" | "evidence" | "events" | "docs">("terminal");
-  const [isMonitoring, setIsMonitoring] = useState<boolean>(true);
-  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [monitoringSnapshot, setMonitoringSnapshot] = useState<MonitoringSnapshot | null>(null);
+  const [monitoringError, setMonitoringError] = useState<string | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const [controlPending, setControlPending] = useState<boolean>(false);
   const [selectedEventLog, setSelectedEventLog] = useState<"rf" | "acoustic" | "morse" | "system">("rf");
-  const [simUptime, setSimUptime] = useState<number>(42);
   const [auditReport, setAuditReport] = useState<AuditSummary | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditRefreshCount, setAuditRefreshCount] = useState<number>(() => Date.now());
@@ -170,58 +195,74 @@ export default function App() {
     loadAuditReport();
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const pollMonitoring = async () => {
+      try {
+        const snapshot = await fetchMonitoringSnapshot();
+        if (active) {
+          setMonitoringSnapshot(snapshot);
+          setMonitoringError(null);
+        }
+      } catch (error) {
+        if (active) {
+          setMonitoringSnapshot(null);
+          setMonitoringError(error instanceof Error ? error.message : "Monitoring API is unavailable");
+        }
+      }
+    };
+
+    void pollMonitoring();
+    const timer = window.setInterval(() => void pollMonitoring(), 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const performMonitoringAction = async (action: MonitoringAction) => {
+    setControlPending(true);
+    setControlError(null);
+    try {
+      const snapshot = await sendMonitoringAction(action);
+      setMonitoringSnapshot(snapshot);
+      setMonitoringError(null);
+      setControlError(null);
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : "Monitoring command failed");
+    } finally {
+      setControlPending(false);
+    }
+  };
+
   const overallAuditStatus = auditReport?.overall_result ?? "NOT VALIDATED";
   const rfRecord = auditReport?.plots.find((p) => p.modality === "RF") ?? null;
   const acousticRecord = auditReport?.plots.find((p) => p.modality === "ACOUSTIC") ?? null;
   const fanRecord = auditReport?.plots.find((p) => p.modality === "FAN_SIMULATION") ?? null;
-
-  // Uptime ticker
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (isMonitoring && !isPaused) {
-        setSimUptime((prev) => prev + 1);
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [isMonitoring, isPaused]);
+  const isMonitoring = monitoringSnapshot?.monitoring.running ?? false;
+  const isPaused = monitoringSnapshot?.monitoring.paused ?? false;
+  const monitoringStatus = monitoringSnapshot?.monitoring.status ?? (monitoringError ? "API UNAVAILABLE" : "CONNECTING");
+  const detections = monitoringSnapshot?.detections ?? [];
+  const recentEvents = detections.slice(0, 5);
+  const latestRfDetection = detections.find((event) => event.modality === "RF");
+  const latestAcousticDetection = detections.find(
+    (event) => event.modality === "ACOUSTIC" && event.metrics.pulse_count !== undefined,
+  );
+  const latestMorseDetection = detections.find(
+    (event) => event.modality === "ACOUSTIC" && event.confidence_score !== null,
+  );
+  const selectedEventRecords = detections.filter((event) => {
+    if (selectedEventLog === "rf") return event.modality === "RF";
+    if (selectedEventLog === "morse") return event.modality === "ACOUSTIC" && event.confidence_score !== null;
+    if (selectedEventLog === "acoustic") return event.modality === "ACOUSTIC" && event.confidence_score === null;
+    return false;
+  });
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard?.writeText(text);
     setCopiedHash(text);
     setTimeout(() => setCopiedHash(null), 2000);
   };
-
-  // Recent operational events list
-  const recentEvents: EventItem[] = [
-    {
-      timestamp: "07:41:25",
-      sensor: "SDR-01",
-      event: "Unusual RF Spectral Activity",
-      evidence: "Peak -2.5 dBFS at 434.070 MHz (+55.4 dB over -57.9 dBFS floor)",
-      level: "alert",
-    },
-    {
-      timestamp: "07:38:56",
-      sensor: "MIC-01",
-      event: "Covert Acoustic Morse Channel Detected",
-      evidence: "Target SOS (... --- ...), Confidence 89.0%, Causal Timing Match",
-      level: "alert",
-    },
-    {
-      timestamp: "07:38:52",
-      sensor: "MIC-01",
-      event: "Structured Acoustic Repetitive Pulses",
-      evidence: "Freq 1820.5 Hz, 9 Pulses in 6.2s, Energy Ratio 3.2x baseline",
-      level: "warning",
-    },
-    {
-      timestamp: "07:35:50",
-      sensor: "SYSTEM",
-      event: "EngineStarted",
-      evidence: "Dual-channel RF & Acoustic SIGINT monitoring pipelines active",
-      level: "info",
-    },
-  ];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-mono text-sm antialiased selection:bg-cyan-500 selection:text-black">
@@ -247,53 +288,42 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded border border-slate-800 text-xs">
             <span className="text-slate-400">Status:</span>
-            {isPaused ? (
-              <span className="text-amber-400 font-semibold flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-amber-400"></span> PAUSED
-              </span>
-            ) : isMonitoring ? (
-              <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> LIVE MONITORING
-              </span>
-            ) : (
-              <span className="text-rose-400 font-semibold flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-rose-400"></span> STOPPED
-              </span>
-            )}
+            <span className={`font-semibold ${monitoringStatus === "ACTIVE" ? "text-emerald-400" : monitoringStatus === "PAUSED" || monitoringStatus === "DEGRADED" || monitoringStatus === "NO SENSORS" ? "text-amber-400" : "text-slate-300"}`}>
+              {monitoringStatus}
+            </span>
             <span className="text-slate-600">|</span>
             <span className="text-slate-400">Uptime:</span>
-            <span className="text-cyan-400 font-medium">{simUptime}s</span>
+            <span className="text-cyan-400 font-medium">
+              {monitoringSnapshot ? `${Math.floor(monitoringSnapshot.monitoring.uptime_sec)}s` : "N/A"}
+            </span>
           </div>
 
           <div className="flex items-center gap-1 bg-slate-900 p-1 rounded border border-slate-800">
             <button
-              onClick={() => {
-                setIsMonitoring(true);
-                setIsPaused(false);
-              }}
+              onClick={() => void performMonitoringAction(isPaused ? "resume" : "start")}
+              disabled={!monitoringSnapshot || controlPending}
               title="Start / Resume Monitoring [S / R]"
               className={`p-1.5 rounded transition ${
                 isMonitoring && !isPaused ? "bg-cyan-600 text-white" : "hover:bg-slate-800 text-slate-400"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-40`}
             >
               <Play className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setIsPaused(!isPaused)}
+              onClick={() => void performMonitoringAction(isPaused ? "resume" : "pause")}
+              disabled={!monitoringSnapshot || !isMonitoring || controlPending}
               title="Pause Monitoring [P]"
-              className={`p-1.5 rounded transition ${isPaused ? "bg-amber-600 text-white" : "hover:bg-slate-800 text-slate-400"}`}
+              className={`p-1.5 rounded transition ${isPaused ? "bg-amber-600 text-white" : "hover:bg-slate-800 text-slate-400"} disabled:cursor-not-allowed disabled:opacity-40`}
             >
               <Pause className="w-4 h-4" />
             </button>
             <button
-              onClick={() => {
-                setIsMonitoring(false);
-                setIsPaused(false);
-              }}
+              onClick={() => void performMonitoringAction("stop")}
+              disabled={!monitoringSnapshot || !isMonitoring || controlPending}
               title="Stop Monitoring [X]"
               className={`p-1.5 rounded transition ${
                 !isMonitoring ? "bg-rose-600 text-white" : "hover:bg-slate-800 text-slate-400"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-40`}
             >
               <Square className="w-4 h-4" />
             </button>
@@ -312,7 +342,7 @@ export default function App() {
           }`}
         >
           <Terminal className="w-3.5 h-3.5" />
-          Terminal Live Monitor
+          Live Detection Monitor
         </button>
 
         <button
@@ -375,6 +405,16 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 p-4 overflow-y-auto">
+        {monitoringError && (
+          <div className="mx-auto mb-4 max-w-6xl rounded border border-amber-800 bg-amber-950/40 px-3 py-2 text-xs text-amber-200" role="status">
+            Monitoring API unavailable: {monitoringError}. Start it with <code>python -m aetherhound.api</code>; live values remain unavailable until it responds.
+          </div>
+        )}
+        {controlError && (
+          <div className="mx-auto mb-4 max-w-6xl rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-200" role="alert">
+            Monitoring command failed: {controlError}
+          </div>
+        )}
         {/* TAB 1: TERMINAL MONITOR (Rich ANSI Mirror) */}
         {activeTab === "terminal" && (
           <div className="space-y-4 max-w-6xl mx-auto">
@@ -386,9 +426,9 @@ export default function App() {
                     <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></span>
                     <span className="w-2.5 h-2.5 rounded-full bg-green-500/80"></span>
                   </div>
-                  <span className="text-slate-300 font-semibold text-[11px] ml-2">aetherhound@rpi:~/aetherhound $ python3 -m aetherhound.interface.live_monitor</span>
+                  <span className="text-slate-300 font-semibold text-[11px] ml-2">aetherhound@local $ GET /api/monitoring</span>
                 </div>
-                <span className="text-[10px] text-slate-500">TTY / 80x24 ANSI Rich Renderer</span>
+                <span className="text-[10px] text-slate-500">Python engine API / 2s polling</span>
               </div>
 
               <div className="p-4 bg-slate-950 text-slate-200 space-y-4">
@@ -397,49 +437,64 @@ export default function App() {
                   <span className="text-white font-semibold">AIR-GAPPED RF & ACOUSTIC MONITORING</span>
                   {isPaused && <span className="ml-2 text-rose-400 font-bold">[PAUSED]</span>}
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    Mode: Dual-Channel Real-Time SIGINT | Latency: 2.8 ms | Update: 250 ms | Evidence Audit: {overallAuditStatus}
+                    Backend: {monitoringSnapshot ? "CONNECTED" : monitoringError ? "UNAVAILABLE" : "CONNECTING"} |{" "}
+                    Engine: {monitoringStatus} | Poll interval: 2s | Evidence Audit: {overallAuditStatus}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div className="border border-slate-800 bg-slate-900/60 rounded p-3 space-y-2">
+                    <div className="text-slate-300 font-bold pb-1 border-b border-slate-800">LIVE SUMMARY</div>
+                    <div className="space-y-2 text-[11px]">
+                      <div className="flex justify-between"><span className="text-slate-400">Total detections:</span><span className="text-slate-100">{monitoringSnapshot?.summary.total_detections ?? "N/A"}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-400">Active alerts:</span><span className="text-rose-300">{monitoringSnapshot?.summary.active_alerts ?? "N/A"}</span></div>
+                      <div className="flex flex-col gap-1"><span className="text-slate-400">Latest detection:</span><span className="text-cyan-300">{formatMonitoringTimestamp(monitoringSnapshot?.summary.latest_detection_timestamp)}</span></div>
+                    </div>
+                  </div>
                   {/* RF MONITORING PANEL */}
                   <div className="border border-cyan-900/60 bg-slate-900/60 rounded p-3 space-y-2">
                     <div className="text-cyan-400 font-bold pb-1 border-b border-slate-800 flex items-center justify-between">
-                      <span>RF SENSOR (SDR-01)</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">RTL2832U</span>
+                      <span>RF SENSOR ({monitoringSnapshot?.rf.sensor_id ?? "N/A"})</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                        {monitoringSnapshot ? (monitoringSnapshot.rf.connected ? "CONNECTED" : "NOT CONNECTED") : "N/A"}
+                      </span>
                     </div>
                     <div className="space-y-1 text-[11px]">
                       <div className="flex justify-between">
                         <span className="text-slate-400">Status:</span>
-                        <span className="text-emerald-400 font-medium">STREAMING (Active)</span>
+                        <span className={monitoringSnapshot?.rf.status === "SUSPICIOUS" ? "text-rose-400 font-medium" : "text-emerald-400 font-medium"}>{monitoringSnapshot?.rf.status ?? "N/A"}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Center Frequency:</span>
-                        <span className="text-slate-100 font-bold">433.920 MHz</span>
+                        <span className="text-slate-100 font-bold">{monitoringSnapshot?.rf.metrics.center_freq_hz == null ? "N/A" : `${formatNumber(monitoringSnapshot.rf.metrics.center_freq_hz / 1e6, 3)} MHz`}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Sample Rate:</span>
-                        <span className="text-slate-300">2.048 Msps</span>
+                        <span className="text-slate-300">{monitoringSnapshot?.rf.metrics.sample_rate_hz == null ? "N/A" : `${formatNumber(monitoringSnapshot.rf.metrics.sample_rate_hz / 1e6, 3)} Msps`}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Noise Floor (MAD):</span>
-                        <span className="text-amber-400">-57.9 dBFS</span>
+                        <span className="text-amber-400">{formatNumber(monitoringSnapshot?.rf.metrics.noise_floor_db)} dB</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Peak Signal Level:</span>
-                        <span className="text-rose-400 font-bold">-2.5 dBFS</span>
+                        <span className="text-rose-400 font-bold">{formatNumber(monitoringSnapshot?.rf.metrics.peak_power_db)} dB</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Peak Freq:</span>
-                        <span className="text-cyan-300">434.070 MHz (+150 kHz)</span>
+                        <span className="text-cyan-300">{monitoringSnapshot?.rf.metrics.peak_freq_hz == null ? "N/A" : `${formatNumber(monitoringSnapshot.rf.metrics.peak_freq_hz / 1e6, 3)} MHz`}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-400">Deviation:</span>
-                        <span className="text-rose-400 font-bold">+55.4 dB (11.3 σ)</span>
+                        <span className="text-slate-400">Last recorded alert deviation:</span>
+                        <span className="text-rose-400 font-bold">{formatNumber(getNumericMetric(latestRfDetection, "deviation_db"))} dB / {formatNumber(getNumericMetric(latestRfDetection, "sigma_deviation"))} σ</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">DSP Latency:</span>
-                        <span className="text-slate-400">2.8 ms</span>
+                        <span className="text-slate-400">{formatNumber(monitoringSnapshot?.rf.metrics.processing_latency_ms)} ms</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Source:</span>
+                        <span className="text-slate-300">{monitoringSnapshot?.rf.source_type ?? "N/A"}</span>
                       </div>
                     </div>
                   </div>
@@ -447,41 +502,47 @@ export default function App() {
                   {/* ACOUSTIC MONITORING PANEL */}
                   <div className="border border-emerald-900/60 bg-slate-900/60 rounded p-3 space-y-2">
                     <div className="text-emerald-400 font-bold pb-1 border-b border-slate-800 flex items-center justify-between">
-                      <span>ACOUSTIC (MIC-01)</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">PyAudio Stream</span>
+                      <span>ACOUSTIC ({monitoringSnapshot?.acoustic.sensor_id ?? "N/A"})</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
+                        {monitoringSnapshot ? (monitoringSnapshot.acoustic.connected ? "CONNECTED" : "NOT CONNECTED") : "N/A"}
+                      </span>
                     </div>
                     <div className="space-y-1 text-[11px]">
                       <div className="flex justify-between">
                         <span className="text-slate-400">Status:</span>
-                        <span className="text-emerald-400 font-medium">STREAMING (Active)</span>
+                        <span className={monitoringSnapshot?.acoustic.status === "SUSPICIOUS" ? "text-rose-400 font-medium" : "text-emerald-400 font-medium"}>{monitoringSnapshot?.acoustic.status ?? "N/A"}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Sample Rate:</span>
-                        <span className="text-slate-100 font-bold">44,100 Hz</span>
+                        <span className="text-slate-100 font-bold">{monitoringSnapshot?.acoustic.metrics.sample_rate_hz == null ? "N/A" : `${formatNumber(monitoringSnapshot.acoustic.metrics.sample_rate_hz, 0)} Hz`}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Chunk Size:</span>
-                        <span className="text-slate-300">2,048 frames (46.4ms)</span>
+                        <span className="text-slate-300">{formatNumber(monitoringSnapshot?.acoustic.metrics.chunk_size, 0)} frames</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">RMS Energy:</span>
-                        <span className="text-cyan-300 font-bold">0.14820</span>
+                        <span className="text-cyan-300 font-bold">{formatNumber(monitoringSnapshot?.acoustic.metrics.rms_energy, 5)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Dominant Frequency:</span>
-                        <span className="text-slate-100">1,820.5 Hz (Fan BPF)</span>
+                        <span className="text-slate-100">{monitoringSnapshot?.acoustic.metrics.dominant_frequency_hz == null ? "N/A" : `${formatNumber(monitoringSnapshot.acoustic.metrics.dominant_frequency_hz)} Hz`}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-400">Detected Pulse Count:</span>
-                        <span className="text-amber-400 font-bold">9 transitions</span>
+                        <span className="text-slate-400">Last recorded alert pulses:</span>
+                        <span className="text-amber-400 font-bold">{formatNumber(getNumericMetric(latestAcousticDetection, "pulse_count"), 0)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Periodicity Score:</span>
-                        <span className="text-emerald-300">0.82 (Repetitive)</span>
+                        <span className="text-emerald-300">{formatNumber(getNumericMetric(latestAcousticDetection, "mean_periodicity"))}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">DSP Latency:</span>
-                        <span className="text-slate-400">1.4 ms</span>
+                        <span className="text-slate-400">{formatNumber(monitoringSnapshot?.acoustic.metrics.processing_latency_ms)} ms</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Source:</span>
+                        <span className="text-slate-300">{monitoringSnapshot?.acoustic.source_type ?? "N/A"}</span>
                       </div>
                     </div>
                   </div>
@@ -495,26 +556,28 @@ export default function App() {
                     <div className="space-y-2 text-[11px]">
                       <div className="flex justify-between items-center">
                         <span className="text-slate-400">RF Spectrum:</span>
-                        <span className="text-rose-400 font-bold px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-800/80">
-                          SUSPICIOUS ACTIVITY
+                        <span className="text-slate-200 font-bold px-1.5 py-0.5 rounded bg-slate-950/60 border border-slate-800">
+                          {monitoringSnapshot?.rf.status ?? "N/A"}
                         </span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-slate-400">Acoustic Burst:</span>
-                        <span className="text-amber-400 font-bold px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/80">
-                          SUSPICIOUS ACTIVITY
+                        <span className="text-slate-200 font-bold px-1.5 py-0.5 rounded bg-slate-950/60 border border-slate-800">
+                          {monitoringSnapshot?.acoustic.status ?? "N/A"}
                         </span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-slate-400">Morse Decoder:</span>
-                        <span className="text-rose-400 font-bold px-1.5 py-0.5 rounded bg-rose-950 border border-rose-700 animate-pulse">
-                          PATTERN DETECTED (SOS)!
+                        <span className="text-slate-200 font-bold px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800">
+                          {monitoringSnapshot?.acoustic.morse_status ?? "N/A"}
                         </span>
                       </div>
                       <div className="p-2 bg-slate-950/80 rounded border border-slate-800 mt-2">
-                        <div className="text-[10px] text-slate-400">Target Signature Decoded:</div>
-                        <div className="text-cyan-300 font-bold text-xs tracking-widest mt-0.5">... --- ... (S O S)</div>
-                        <div className="text-[10px] text-emerald-400 mt-0.5">Confidence: 89.0% | Match: Dual Schmitt Causal Envelope</div>
+                        <div className="text-[10px] text-slate-400">Latest Morse result:</div>
+                        <div className="text-cyan-300 font-bold text-xs tracking-widest mt-0.5">{latestMorseDetection?.metrics.decoded_morse ?? "N/A"}</div>
+                        <div className="text-[10px] text-emerald-400 mt-0.5">
+                          Confidence: {latestMorseDetection?.confidence_score == null ? "N/A" : `${formatNumber(latestMorseDetection.confidence_score * 100, 1)}%`}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -523,42 +586,37 @@ export default function App() {
                 {/* Recent Events Table */}
                 <div className="border border-slate-800 bg-slate-900/40 rounded p-3">
                   <div className="text-slate-300 font-bold pb-1.5 border-b border-slate-800 text-[11px] flex justify-between">
-                    <span>RECENT REAL-TIME THREAT TELEMETRY</span>
-                    <span className="text-slate-500 text-[10px]">data/events/*.jsonl</span>
+                    <span>DETECTION HISTORY</span>
+                    <span className="text-slate-500 text-[10px]">deduplicated API records</span>
                   </div>
                   <div className="divide-y divide-slate-800/60 mt-2 font-mono text-[11px]">
-                    {recentEvents.map((ev, idx) => (
-                      <div key={idx} className="py-1.5 flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-cyan-400 font-semibold">{ev.timestamp}</span>
-                          <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 text-[10px]">{ev.sensor}</span>
-                          <span className={ev.level === "alert" ? "text-rose-400 font-bold" : ev.level === "warning" ? "text-amber-400 font-semibold" : "text-slate-300"}>
-                            {ev.event}
-                          </span>
+                    {recentEvents.length === 0 ? (
+                      <div className="py-5 text-center text-slate-500">No RF or acoustic detection records available.</div>
+                    ) : recentEvents.map((event) => (
+                      <div key={event.event_id} className="py-2">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="text-cyan-400 font-semibold">{formatMonitoringTimestamp(event.timestamp)}</span>
+                          <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 text-[10px]">{event.modality}</span>
+                          <span className="text-slate-300">{event.sensor_id ?? "N/A"}</span>
+                          <span className="text-rose-300 font-semibold">{event.detection_type ?? "N/A"}</span>
                         </div>
-                        <span className="text-slate-400 text-[10px] truncate max-w-md">{ev.evidence}</span>
+                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+                          <span>Capture: {event.capture_id ?? "N/A"}</span>
+                          <span>Source: {event.source_type ?? "N/A"}</span>
+                          <span>Status: {event.detection_status ?? "N/A"}</span>
+                          <span>Confidence: {event.confidence_score == null ? "N/A" : `${formatNumber(event.confidence_score * 100, 1)}%`}</span>
+                          <span>Evidence: {event.evidence_ref ?? "N/A"}</span>
+                          <span>Verification: {event.verification_status ?? "N/A"}</span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-500">{summarizeMetrics(event.metrics)}</div>
                       </div>
                     ))}
                   </div>
                 </div>
 
                 {/* Keyboard Controls Bar */}
-                <div className="p-2 bg-slate-900/80 border border-slate-800 rounded text-center text-[11px] text-slate-400 flex flex-wrap justify-center gap-4">
-                  <span>
-                    <strong className="text-cyan-400">S</strong> = Start
-                  </span>
-                  <span>
-                    <strong className="text-amber-400">P</strong> = Pause
-                  </span>
-                  <span>
-                    <strong className="text-emerald-400">R</strong> = Resume
-                  </span>
-                  <span>
-                    <strong className="text-rose-400">X</strong> = Stop
-                  </span>
-                  <span>
-                    <strong className="text-purple-400">Q</strong> = Quit
-                  </span>
+                <div className="p-2 bg-slate-900/80 border border-slate-800 rounded text-center text-[11px] text-slate-400">
+                  Monitoring controls in the header communicate with the Python engine API.
                 </div>
               </div>
             </div>
@@ -1187,8 +1245,8 @@ export default function App() {
           <div className="space-y-4 max-w-5xl mx-auto">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-100">Structured JSONL Threat Telemetry Logs</h3>
-                <p className="text-xs text-slate-400">Non-blocking, streaming JSONL telemetry written to data/events/</p>
+                <h3 className="text-base font-bold text-slate-100">Persisted Detector Event History</h3>
+                <p className="text-xs text-slate-400">Records are loaded from existing JSONL logs and updated by the live detector callbacks.</p>
               </div>
 
               <div className="flex gap-2">
@@ -1235,34 +1293,24 @@ export default function App() {
               </div>
             </div>
 
-            {/* Log Content Viewer */}
+            {/* Event Content Viewer */}
             <div className="bg-black border border-slate-800 rounded-lg p-4 font-mono text-xs overflow-x-auto text-slate-300 space-y-2">
-              {selectedEventLog === "rf" && (
-                <pre className="text-cyan-300 whitespace-pre-wrap leading-relaxed">
-{`{"event_type": "Unusual RF Spectral Activity", "sensor_id": "SDR-01", "detected_freq_hz": 434070000.0, "signal_power_db": -2.48, "noise_floor_db": -57.89, "deviation_db": 55.41, "sigma_deviation": 11.34, "persistence_windows": 3, "timestamp": 1794469280.4086707, "status": "SUSPICIOUS RF ACTIVITY", "is_synthetic": true, "raw_iq_binding": "data/rf/raw/synthetic_rf_anomaly_iq.npy", "evidence": {"peak_bin": 1174, "noise_std_db": 4.89, "total_peaks": 1}}`}
+              {selectedEventRecords.length === 0 ? (
+                <div className="py-5 text-center text-slate-500">
+                  {selectedEventLog === "system"
+                    ? "System lifecycle entries are not detector events and are not included in this API response."
+                    : monitoringError
+                      ? "Backend history is unavailable."
+                      : "No records are available for this detector."}
+                </div>
+              ) : selectedEventRecords.map((record) => (
+                <pre
+                  key={record.event_id}
+                  className={`whitespace-pre-wrap leading-relaxed ${selectedEventLog === "rf" ? "text-cyan-300" : selectedEventLog === "morse" ? "text-purple-300" : "text-emerald-300"}`}
+                >
+                  {JSON.stringify(record, null, 2)}
                 </pre>
-              )}
-
-              {selectedEventLog === "morse" && (
-                <pre className="text-purple-300 whitespace-pre-wrap leading-relaxed">
-{`{"event_type": "Covert Acoustic Morse Channel Detected", "sensor_id": "MIC-01", "target_pattern": "SOS", "decoded_morse": "... --- ...", "detection_method": "Acoustic Pulse Timing", "match_score": 0.890, "timestamp": 1794469136.214, "source": "SYNTHETIC RECEIVER STREAM", "result": "PATTERN DETECTED", "raw_capture_binding": "data/acoustic/raw/sos_fan_detection_capture.wav", "evidence": {"mean_timing_error_pct": 14.2, "timing_accuracy": 0.858, "symbol_count": 9, "dot_ref_sec": 0.20, "dash_ref_sec": 0.60}}`}
-                </pre>
-              )}
-
-              {selectedEventLog === "acoustic" && (
-                <pre className="text-emerald-300 whitespace-pre-wrap leading-relaxed">
-{`{"event_type": "Structured Acoustic Repetitive Pulses", "sensor_id": "MIC-01", "dominant_frequency_hz": 1820.5, "rms_energy": 0.1482, "pulse_count": 9, "pattern_duration_sec": 6.2, "timestamp": 1794469130.100, "status": "SUSPICIOUS ACOUSTIC ACTIVITY", "is_synthetic": true, "evidence": {"energy_ratio": 3.2, "mean_periodicity": 0.74, "baseline_rms": 0.046}}`}
-                </pre>
-              )}
-
-              {selectedEventLog === "system" && (
-                <pre className="text-slate-400 whitespace-pre-wrap leading-relaxed">
-{`{"timestamp": 1794469000.12, "iso_time": "2026-11-12T07:35:50Z", "action": "EngineStarted", "details": "AetherHound dual-channel monitoring active"}
-{"timestamp": 1794469140.55, "iso_time": "2026-11-12T07:38:10Z", "action": "OptionB_AcousticTestExecuted", "details": "Streaming receiver captured SOS Morse, envelope extracted, match score 89.0%"}
-{"timestamp": 1794469285.80, "iso_time": "2026-11-12T07:41:25Z", "action": "OptionC_SoftwareTestExecuted", "details": "Synthetic narrowband RF carrier detected, raw IQ saved, cryptographic SHA-256 bound"}
-{"timestamp": 1794469310.20, "iso_time": "2026-11-12T07:45:00Z", "action": "EvidenceAuditExecuted", "details": "aetherhound/scripts/verify_evidence.py completed: 3/3 plots validated against raw buffers"}`}
-                </pre>
-              )}
+              ))}
             </div>
           </div>
         )}
