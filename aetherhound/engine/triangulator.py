@@ -76,3 +76,8 @@ class RackTriangulator:
             "racks": self.racks,
             "sensors": self.sensors
         }
+
+    def apply_wall_attenuation(self, raw_distance_m: float, wall_count: int = 1, attenuation_per_wall_db: float = 3.5) -> float:
+        """Adjust distance estimation using Wall Attenuation Factor (WAF) model."""
+        correction_factor = 10.0 ** ((wall_count * attenuation_per_wall_db) / (10.0 * self.path_loss_exp))
+        return raw_distance_m / max(correction_factor, 1.0)

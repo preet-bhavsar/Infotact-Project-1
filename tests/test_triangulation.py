@@ -19,3 +19,10 @@ def test_rack_pinpointing_geometry():
     assert rack in triangulator.racks
     assert 0.0 <= confidence <= 1.0
     assert len(coords) == 2
+
+def test_wall_attenuation_correction():
+    triangulator = RackTriangulator()
+    raw_dist = 5.0
+    adjusted_dist = triangulator.apply_wall_attenuation(raw_dist, wall_count=2, attenuation_per_wall_db=3.0)
+    assert adjusted_dist < raw_dist
+    assert adjusted_dist > 0.0
