@@ -63,7 +63,7 @@ class AcousticConfig:
     channels: int = int(os.getenv("AETHERHOUND_AUDIO_CHANNELS", 1))
     device_index: Optional[int] = None if os.getenv("AETHERHOUND_AUDIO_DEVICE_INDEX", "-1") == "-1" else int(os.getenv("AETHERHOUND_AUDIO_DEVICE_INDEX", "-1"))
     chunk_size: int = int(os.getenv("AETHERHOUND_AUDIO_CHUNK_SIZE", 2048))
-    audio_format: str = "float32"  # float32 or int16
+    audio_format: str = "int16"
     energy_threshold_factor: float = float(os.getenv("AETHERHOUND_ACOUSTIC_ENERGY_THRESHOLD", 3.0))
     rolling_baseline_len: int = 50
 
@@ -75,6 +75,8 @@ class AcousticConfig:
                 raise ValueError(f"Sample rate {self.sample_rate_hz} Hz is not supported by standard audio hardware")
         if self.channels not in (1, 2):
             raise ValueError(f"Unsupported channel count {self.channels}. AetherHound supports mono (1) or stereo (2).")
+        if self.audio_format not in ("int16", "float32"):
+            raise ValueError("Audio format must be 'int16' or 'float32'")
         if self.chunk_size < 256 or (self.chunk_size & (self.chunk_size - 1)) != 0:
             raise ValueError(f"Chunk size {self.chunk_size} should be a power of 2 and >= 256")
 
@@ -105,8 +107,15 @@ class MorseConfig:
             raise ValueError("Dot duration must be positive")
         if self.dash_duration_sec <= self.dot_duration_sec:
             raise ValueError("Dash duration must be longer than dot duration")
+        if any(
+            duration is None or duration <= 0
+            for duration in (self.element_gap_sec, self.letter_gap_sec, self.word_gap_sec)
+        ):
+            raise ValueError("Morse gap durations must be positive")
         if not (0.05 <= self.timing_tolerance <= 0.70):
             raise ValueError("Timing tolerance should be between 0.05 (5%) and 0.70 (70%)")
+        if not (0 < self.low_rpm <= self.base_rpm <= self.high_rpm):
+            raise ValueError("Fan RPM limits must satisfy 0 < low_rpm <= base_rpm <= high_rpm")
 
 
 @dataclass

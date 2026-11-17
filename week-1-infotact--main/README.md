@@ -298,3 +298,103 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. Use the dashboard controls to start, pause, resume, or stop monitoring. The API does not enable synthetic acquisition as a fallback; disconnected devices and unavailable metrics are reported as such. Recent detections are read from the existing `data/events/*.jsonl` files and updated from real detector callbacks.
+
+---
+
+## 20. Direct SDR, Microphone, and Fan Morse Workflows
+
+Run these commands from the project directory (`week-1-infotact--main`). They use the existing acquisition classes, provenance helpers, detectors, API, and dashboard. Direct hardware commands fail with an actionable error when hardware or its driver is unavailable; they never substitute simulated data.
+
+### Windows environment and hardware dependencies
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+For RTL-SDR on Windows, install the WinUSB driver for the RTL-SDR device using Zadig, then install the Python wrapper (already listed in `requirements.txt`):
+
+```powershell
+python -m pip install pyrtlsdr
+python -c "import rtlsdr; print('pyrtlsdr is available')"
+```
+
+On Linux, install the RTL-SDR/USB libraries and PortAudio development headers before installing Python dependencies:
+
+```bash
+sudo apt-get install -y rtl-sdr librtlsdr-dev libusb-1.0-0-dev portaudio19-dev
+python -m pip install -r requirements.txt
+```
+
+**Supported SDR:** this acquisition module supports RTL-SDR dongles through `pyrtlsdr`/`librtlsdr`. HackRF is not an RTL-SDR and is not supported by this backend; no HackRF capture is attempted or labelled as RTL-SDR. A separate HackRF backend would be needed to use one.
+
+### SDR discovery and capture
+
+```powershell
+python -m aetherhound.hardware.rf_capture list
+$env:AETHERHOUND_RF_CENTER_FREQ_HZ = "433920000"
+$env:AETHERHOUND_RF_SAMPLE_RATE_HZ = "2048000"
+$env:AETHERHOUND_RF_GAIN = "auto"
+python -m aetherhound.hardware.rf_capture capture --duration 2 --output-dir data/rf/raw
+```
+
+Each successful capture writes complex IQ samples as `.npy`, an FFT frequency/power `.spectrum.npz`, and a JSON sidecar containing capture ID, device, UTC timestamp, center frequency, sample rate, gain, count, source type, capture status, and SHA-256 hashes. The spectrum is calculated from the captured samples; no RF values are fabricated.
+
+Configuration can also be supplied through `RFConfig` in Python. Its validation enforces RTL-SDR frequency/sample-rate limits. The existing `RFProcessor` and `RFDetector` remain the streaming analysis path; start the monitoring API below to analyze live RTL-SDR windows.
+
+### Microphone discovery and recording
+
+Install PortAudio/PyAudio as above, then list inputs and record. The defaults are 44.1 kHz, mono, and 16-bit PCM WAV.
+
+```powershell
+python -m aetherhound.hardware.acoustic_capture list
+python -m aetherhound.hardware.acoustic_capture record --device-index 1 --duration 5 --sample-rate 44100 --channels 1 --output-dir data/acoustic/raw
+```
+
+Omit `--device-index` to use the configured or system-default input. `--channels` accepts `1` or `2`; sample rate, device index, and `--audio-format` (`int16` or `float32`) are adjustable. The WAV sidecar records microphone ID, source type, capture ID/time, frame count, duration, audio format, capture status, RMS energy, peak amplitude, zero-crossing rate, and the recording's SHA-256. A stereo WAV is retained as stereo while the real-time detector receives downmixed mono chunks.
+
+### Safe simulation-only fan Morse generator
+
+This command **only** creates virtual RPM values and synthetic audio. It does not access or modify a physical fan, thermal controls, firmware, or fan-control interfaces.
+
+```powershell
+python -m aetherhound.mock_malware.fan_pattern_simulator --message SOS --output-dir data/mock_fan
+python -m aetherhound.mock_malware.fan_pattern_simulator --message "HELLO WORLD" --dot-duration 0.15 --dash-duration 0.45 --sample-rate 44100
+```
+
+The output includes a sampled RPM/pulse CSV timeline, synthetic WAV, and JSON metadata with the expected Morse sequence, RPM and timing parameters, source type `SYNTHETIC_SIMULATION`, artifact hashes, and `physical_fan_control: false`. The command also feeds the generated waveform through the existing acoustic processor, acoustic detector, and streaming Morse detector and prints the actual detector outcome. Synthetic detector events remain explicitly synthetic.
+
+### End-to-end monitoring and tests
+
+For the complete synthetic RF/acoustic `RealtimeEngine` workflow (no hardware required):
+
+```powershell
+python -m aetherhound.scripts.week1_demo --mode software --duration 8
+```
+
+For live hardware monitoring, run the API and dashboard in separate PowerShell terminals from this project directory:
+
+```powershell
+python -m aetherhound.api
+npm run dev
+```
+
+Open `http://localhost:3000`. The existing dashboard distinguishes physical connection from sample provenance: synthetic samples are marked `SYNTHETIC_SIMULATION` and do not make a sensor appear physically connected.
+
+Run tests and frontend checks:
+
+```powershell
+python -m pytest aetherhound/tests -q
+python -m compileall -q aetherhound
+npm run lint
+npm run build
+```
+
+### Troubleshooting and verification limits
+
+- **RTL-SDR not listed / `librtlsdr` load error:** check Zadig's WinUSB driver on Windows, or install the OS RTL-SDR/USB libraries on Linux. `rf_capture capture` will fail rather than label synthetic data as a real capture.
+- **Microphone permission or open error:** select an input from `acoustic_capture list`, grant OS microphone permission to the terminal, and retry with its device index. A listable device is not proof that a recording has been made.
+- **PyAudio installation fails:** ensure PortAudio is installed for your OS and that your Python version has a compatible PyAudio wheel/build toolchain.
+- **HackRF available:** this RTL-SDR backend does not support HackRF; it will not claim the HackRF as an RTL-SDR.
+- **Physical verification:** unit tests mock hardware and the Morse workflow is validated using generated audio. Actual RTL-SDR IQ capture and physical microphone recording require the corresponding available device and driver.

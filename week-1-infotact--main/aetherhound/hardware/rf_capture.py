@@ -26,6 +26,7 @@ class IQSampleWindow:
     is_synthetic: bool = False
     window_id: int = 0
     dropped_before: int = 0
+    source_type: Optional[str] = None
 
 
 class RFCaptureDevice:
@@ -85,8 +86,6 @@ class RFCaptureDevice:
             success = self._init_hardware()
             if not success:
                 return False
-        else:
-            self._connected = True
 
         self._is_running.set()
         self._start_time = time.time()
@@ -161,6 +160,12 @@ class RFCaptureDevice:
         except Exception as e:
             self._connected = False
             self._last_error = f"RTL-SDR initialization failure: {str(e)}"
+            if self._sdr is not None:
+                try:
+                    self._sdr.close()
+                except Exception:
+                    pass
+                self._sdr = None
             return False
 
     def _hardware_acquisition_loop(self) -> None:
@@ -182,6 +187,7 @@ class RFCaptureDevice:
                     is_synthetic=False,
                     window_id=self._window_counter,
                     dropped_before=self._dropped_windows,
+                    source_type="LIVE_HARDWARE",
                 )
 
                 try:
@@ -254,6 +260,7 @@ class RFCaptureDevice:
                 is_synthetic=True,
                 window_id=self._window_counter,
                 dropped_before=self._dropped_windows,
+                source_type="SYNTHETIC_SIMULATION",
             )
 
             try:
@@ -284,6 +291,7 @@ class RFCaptureDevice:
         import os
         from aetherhound.core.evidence_metadata import (
             SOURCE_TYPE_LIVE_HARDWARE,
+            SOURCE_TYPE_RECORDED_HARDWARE,
             SOURCE_TYPE_SYNTHETIC_SIMULATION,
             build_rf_metadata,
             compute_array_sha256,
@@ -294,9 +302,25 @@ class RFCaptureDevice:
         np.save(output_npy_path, window.samples)
         raw_hash = compute_array_sha256(window.samples)
 
-        is_syn = bool(window.is_synthetic)
-        source_type = SOURCE_TYPE_SYNTHETIC_SIMULATION if is_syn else SOURCE_TYPE_LIVE_HARDWARE
-        acq_mode = "Synthetic Complex IQ Simulation" if is_syn else "RTL-SDR Hardware IQ Stream"
+        source_type = window.source_type
+        if source_type is None and window.is_synthetic:
+            source_type = SOURCE_TYPE_SYNTHETIC_SIMULATION
+        if source_type not in (
+            SOURCE_TYPE_LIVE_HARDWARE,
+            SOURCE_TYPE_RECORDED_HARDWARE,
+            SOURCE_TYPE_SYNTHETIC_SIMULATION,
+        ):
+            raise ValueError("IQ window requires explicit source provenance before saving")
+        is_syn = source_type == SOURCE_TYPE_SYNTHETIC_SIMULATION
+        if bool(window.is_synthetic) != is_syn:
+            raise ValueError("IQ window synthetic flag conflicts with its source provenance")
+        acq_mode = (
+            "Synthetic Complex IQ Simulation"
+            if is_syn
+            else "Recorded Hardware IQ Data"
+            if source_type == SOURCE_TYPE_RECORDED_HARDWARE
+            else "RTL-SDR Hardware IQ Stream"
+        )
         meta_path = metadata_json_path or (os.path.splitext(output_npy_path)[0] + ".json")
 
         meta = build_rf_metadata(
@@ -312,8 +336,140 @@ class RFCaptureDevice:
             data_sha256=raw_hash,
             timestamp_epoch=window.timestamp,
         )
+        meta["capture_status"] = "COMPLETED"
+        meta["device_identifier"] = sensor_id
         save_metadata(meta, meta_path)
         return meta
+
+
+def capture_recording(
+    config: Optional[RFConfig] = None,
+    duration_sec: float = 1.0,
+    output_dir: str = "data/rf/raw",
+    device: Optional[RFCaptureDevice] = None,
+) -> dict:
+    """Capture a bounded RF recording, spectrum, and integrity metadata."""
+    import os
+
+    from aetherhound.core.evidence_metadata import (
+        SOURCE_TYPE_LIVE_HARDWARE,
+        build_rf_metadata,
+        compute_file_sha256,
+        generate_capture_id,
+        save_metadata,
+    )
+    from aetherhound.dsp.fft_engine import compute_power_spectrum_db
+
+    if duration_sec <= 0:
+        raise ValueError("Capture duration must be greater than zero")
+    cfg = config or RFConfig()
+    cfg.validate()
+    capture_device = device or RFCaptureDevice(cfg)
+    if capture_device.synthetic_mode:
+        raise ValueError("RF hardware recording requires a physical RTL-SDR device")
+    if not capture_device.start():
+        raise RuntimeError(getattr(capture_device, "_last_error", None) or "RTL-SDR device unavailable")
+
+    windows = []
+    deadline = time.monotonic() + duration_sec
+    try:
+        while time.monotonic() < deadline:
+            window = capture_device.get_window(timeout=min(0.2, max(0.01, deadline - time.monotonic())))
+            if window is not None:
+                windows.append(window)
+    finally:
+        capture_device.stop()
+
+    if not windows:
+        raise RuntimeError("RTL-SDR started but returned no IQ samples")
+
+    iq_samples = np.concatenate([window.samples for window in windows]).astype(np.complex64, copy=False)
+    timestamp = windows[0].timestamp
+    capture_id = generate_capture_id("RF")
+    os.makedirs(output_dir, exist_ok=True)
+    raw_path = os.path.abspath(os.path.join(output_dir, f"{capture_id}.npy"))
+    spectrum_path = os.path.abspath(os.path.join(output_dir, f"{capture_id}.spectrum.npz"))
+    metadata_path = os.path.abspath(os.path.join(output_dir, f"{capture_id}.json"))
+    np.save(raw_path, iq_samples)
+
+    frequencies_hz, spectrum_db = compute_power_spectrum_db(
+        iq_samples,
+        fft_size=cfg.fft_size,
+        sample_rate_hz=cfg.sample_rate_hz,
+        center_freq_hz=cfg.center_freq_hz,
+    )
+    np.savez_compressed(spectrum_path, frequencies_hz=frequencies_hz, power_db=spectrum_db)
+    peak_index = int(np.argmax(spectrum_db))
+    try:
+        device_identifier = str(capture_device._sdr.get_device_name(cfg.device_index))
+    except Exception:
+        device_identifier = f"RTL-SDR device index {cfg.device_index}"
+
+    metadata = build_rf_metadata(
+        sensor_id=device_identifier,
+        source_type=SOURCE_TYPE_LIVE_HARDWARE,
+        center_freq_hz=cfg.center_freq_hz,
+        sample_rate_hz=cfg.sample_rate_hz,
+        rf_gain=cfg.gain,
+        sample_count=len(iq_samples),
+        fft_size=cfg.fft_size,
+        data_file=raw_path,
+        acquisition_mode="RTL-SDR Hardware IQ Capture",
+        data_sha256=compute_file_sha256(raw_path),
+        capture_id=capture_id,
+        timestamp_epoch=timestamp,
+        noise_floor_db=float(np.median(spectrum_db)),
+        peak_freq_hz=float(frequencies_hz[peak_index]),
+        peak_power_db=float(spectrum_db[peak_index]),
+    )
+    metadata.update(
+        {
+            "device_identifier": device_identifier,
+            "capture_status": "COMPLETED",
+            "spectrum_file": spectrum_path,
+            "spectrum_sha256": compute_file_sha256(spectrum_path),
+        }
+    )
+    save_metadata(metadata, metadata_path)
+    return {
+        "capture_id": capture_id,
+        "capture_status": "COMPLETED",
+        "raw_iq_file": raw_path,
+        "spectrum_file": spectrum_path,
+        "metadata_file": metadata_path,
+        "sample_count": len(iq_samples),
+        "metadata": metadata,
+    }
+
+
+def main() -> None:
+    import argparse
+    from aetherhound.hardware.device_check import check_rtlsdr
+
+    parser = argparse.ArgumentParser(description="Acquire RTL-SDR IQ captures")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("list", help="Check for connected RTL-SDR devices")
+    capture_parser = subparsers.add_parser("capture", help="Capture IQ samples and an RF spectrum")
+    capture_parser.add_argument("--duration", type=float, default=1.0, help="Capture duration in seconds")
+    capture_parser.add_argument("--output-dir", default="data/rf/raw")
+    args = parser.parse_args()
+
+    if args.command == "list":
+        result = check_rtlsdr()
+        print(f"{'CONNECTED' if result.connected else 'DISCONNECTED'}: {result.name}")
+        if result.error_message:
+            print(f"Details: {result.error_message}")
+        return
+    try:
+        result = capture_recording(duration_sec=args.duration, output_dir=args.output_dir)
+    except (RuntimeError, ValueError, OSError) as exc:
+        parser.exit(1, f"RF capture failed: {exc}\n")
+    print(f"Capture {result['capture_id']} {result['capture_status']}: {result['sample_count']} samples")
+    print(f"IQ: {result['raw_iq_file']}\nSpectrum: {result['spectrum_file']}\nMetadata: {result['metadata_file']}")
+
+
+if __name__ == "__main__":
+    main()
 
 
 def inject_synthetic_rf_carrier(
@@ -337,4 +493,5 @@ def inject_synthetic_rf_carrier(
         is_synthetic=True,
         window_id=window.window_id,
         dropped_before=window.dropped_before,
+        source_type="SYNTHETIC_SIMULATION",
     )

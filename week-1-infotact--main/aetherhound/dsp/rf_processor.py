@@ -43,6 +43,7 @@ class RFProcessedWindow:
     max_peak_power_db: float
     max_deviation_db: float
     is_synthetic: bool = False
+    source_type: Optional[str] = None
 
 
 class RFProcessor:
@@ -152,6 +153,7 @@ class RFProcessor:
             max_peak_power_db=max_pwr,
             max_deviation_db=max_dev,
             is_synthetic=window.is_synthetic,
+            source_type=window.source_type,
         )
 
         self.latest_raw_iq = samples

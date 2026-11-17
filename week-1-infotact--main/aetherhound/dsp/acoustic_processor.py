@@ -36,6 +36,7 @@ class AcousticProcessedChunk:
     baseline_energy: float
     energy_ratio: float
     is_synthetic: bool = False
+    source_type: Optional[str] = None
 
 
 class AcousticProcessor:
@@ -112,6 +113,7 @@ class AcousticProcessor:
             baseline_energy=baseline,
             energy_ratio=energy_ratio,
             is_synthetic=chunk.is_synthetic,
+            source_type=chunk.source_type,
         )
 
         self.latest_raw_samples = samples

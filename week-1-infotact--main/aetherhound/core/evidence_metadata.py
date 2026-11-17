@@ -200,7 +200,7 @@ def build_acoustic_metadata(
         "detector_event_type": detector_event_type,
         "metrics": {
             "duration_sec": round(duration_sec, 2),
-            "match_score": round(float(match_score), 3) if match_score is not None else 0.0,
+            "match_score": round(float(match_score), 3) if match_score is not None else None,
             "target_pattern": target_pattern or "",
         },
         "notes": notes,

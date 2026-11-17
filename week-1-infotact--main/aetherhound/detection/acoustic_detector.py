@@ -29,6 +29,7 @@ class AcousticAlertEvent:
     status: str = "SUSPICIOUS ACOUSTIC ACTIVITY"
     is_synthetic: bool = False
     evidence: Dict[str, float] = field(default_factory=dict)
+    source_type: Optional[str] = None
 
 
 class AcousticDetector:
@@ -115,6 +116,7 @@ class AcousticDetector:
                 timestamp=now,
                 status="SUSPICIOUS ACOUSTIC ACTIVITY",
                 is_synthetic=chunk.is_synthetic,
+                source_type=chunk.source_type,
                 evidence={
                     "energy_ratio": round(chunk.energy_ratio, 2),
                     "mean_periodicity": round(mean_periodicity, 3),

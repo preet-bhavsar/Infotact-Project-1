@@ -40,6 +40,7 @@ class MorsePatternEvent:
     source: str                       # "LIVE MICROPHONE" or "SYNTHETIC TEST"
     result: str                       # "PATTERN RECOGNIZED" or "PATTERN GENERATED"
     evidence: Dict[str, float] = field(default_factory=dict)
+    source_type: Optional[str] = None
 
 
 class RealtimeMorseDetector:
@@ -169,7 +170,11 @@ class RealtimeMorseDetector:
                     if self._current_state_is_pulse and symbol in (".", "-"):
                         self._classified_symbols.append((symbol, interval_duration, block_time))
                         # Check pattern immediately on new symbol
-                        event = self._evaluate_pattern(chunk.is_synthetic, block_time)
+                        event = self._evaluate_pattern(
+                            chunk.source_type,
+                            chunk.is_synthetic,
+                            block_time,
+                        )
                         if event:
                             detected_event = event
 
@@ -206,7 +211,12 @@ class RealtimeMorseDetector:
             else:
                 return "gap_word"
 
-    def _evaluate_pattern(self, is_synthetic: bool, current_time: float) -> Optional[MorsePatternEvent]:
+    def _evaluate_pattern(
+        self,
+        source_type: Optional[str],
+        is_synthetic: bool,
+        current_time: float,
+    ) -> Optional[MorsePatternEvent]:
         """
         Check if recent symbols match the target sequence ('SOS' -> 3 dots, 3 dashes, 3 dots).
         Calculates exact mathematical match score based on timing error and energy contrast.
@@ -251,8 +261,21 @@ class RealtimeMorseDetector:
 
         self._last_detection_time = current_time
 
-        source_label = "SYNTHETIC TEST" if is_synthetic else "LIVE MICROPHONE"
-        result_label = "PATTERN GENERATED" if is_synthetic else "PATTERN RECOGNIZED"
+        if source_type is None and is_synthetic:
+            source_type = "SYNTHETIC_SIMULATION"
+        source_labels = {
+            "LIVE_HARDWARE": "LIVE MICROPHONE",
+            "RECORDED_HARDWARE": "RECORDED HARDWARE",
+            "SYNTHETIC_SIMULATION": "SYNTHETIC TEST",
+        }
+        source_label = source_labels.get(source_type, "UNKNOWN SOURCE")
+        result_label = (
+            "PATTERN GENERATED"
+            if source_type == "SYNTHETIC_SIMULATION"
+            else "PATTERN RECOGNIZED"
+            if source_type in ("LIVE_HARDWARE", "RECORDED_HARDWARE")
+            else "PATTERN DETECTED"
+        )
 
         event = MorsePatternEvent(
             event_type="Covert Acoustic Morse Channel Detected",
@@ -271,6 +294,7 @@ class RealtimeMorseDetector:
                 "dot_ref_sec": self.config.dot_duration_sec,
                 "dash_ref_sec": self.config.dash_duration_sec,
             },
+            source_type=source_type,
         )
         self._last_event = event
         return event

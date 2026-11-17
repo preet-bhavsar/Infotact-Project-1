@@ -28,8 +28,8 @@ def test_realtime_engine_lifecycle_and_telemetry(tmp_path):
 
     tel = engine.get_telemetry()
     assert tel.uptime_sec > 1.0
-    assert tel.rf_connected is True
-    assert tel.mic_connected is True
+    assert tel.rf_connected is False
+    assert tel.mic_connected is False
     assert tel.rf_windows_processed > 0
     assert tel.acoustic_chunks_processed > 0
 

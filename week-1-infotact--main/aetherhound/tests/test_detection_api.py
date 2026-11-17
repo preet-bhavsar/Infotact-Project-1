@@ -177,6 +177,9 @@ def test_sample_source_classification_does_not_treat_non_synthetic_as_live():
     assert DetectionService._sample_source_type(
         SimpleNamespace(data_source="LIVE HARDWARE", is_synthetic=True)
     ) is None
+    assert DetectionService._sample_source_type(
+        SimpleNamespace(source_type=SOURCE_TYPE_LIVE_HARDWARE, is_synthetic=False)
+    ) == SOURCE_TYPE_LIVE_HARDWARE
 
 
 def test_empty_backend_snapshot_reports_unavailable_sensors_without_fake_metrics(tmp_path):
@@ -197,6 +200,31 @@ def test_empty_backend_snapshot_reports_unavailable_sensors_without_fake_metrics
         "latest_detection_timestamp": None,
     }
     assert snapshot["detections"] == []
+
+
+def test_synthetic_engine_snapshot_never_claims_physical_connection(tmp_path):
+    from aetherhound.core.evidence_metadata import SOURCE_TYPE_SYNTHETIC_SIMULATION
+
+    engine = RealtimeEngine(
+        synthetic_rf=True,
+        synthetic_audio=True,
+        data_dir=str(tmp_path / "data"),
+    )
+    service = DetectionService(data_dir=str(tmp_path / "data"), engine=engine)
+    engine.start()
+    try:
+        import time
+
+        time.sleep(0.35)
+        snapshot = service.snapshot()
+        assert snapshot["rf"]["connected"] is False
+        assert snapshot["acoustic"]["connected"] is False
+        assert snapshot["rf"]["source_type"] == SOURCE_TYPE_SYNTHETIC_SIMULATION
+        assert snapshot["acoustic"]["source_type"] == SOURCE_TYPE_SYNTHETIC_SIMULATION
+        assert snapshot["rf"]["processed_count"] > 0
+        assert snapshot["acoustic"]["processed_count"] > 0
+    finally:
+        engine.stop()
 
 
 def test_history_deduplicates_persisted_and_polled_events(tmp_path):
