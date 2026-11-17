@@ -51,6 +51,7 @@ def test_sos_sequence_recognition():
     assert detected_event.decoded_morse == "... --- ..."
     assert detected_event.match_score >= 0.70
     assert detected_event.source == "SYNTHETIC TEST"
+    assert detected_event.source_type == "SYNTHETIC_SIMULATION"
 
 
 def test_incorrect_sequence_rejection():

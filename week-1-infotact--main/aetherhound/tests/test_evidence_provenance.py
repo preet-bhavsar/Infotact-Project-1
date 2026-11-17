@@ -348,6 +348,7 @@ def test_synthetic_vs_hardware_metadata_handling_with_mocked_devices(tmp_path):
         sample_rate_hz=2_048_000.0,
         is_synthetic=False,
         window_id=1,
+        source_type=SOURCE_TYPE_LIVE_HARDWARE,
     )
     rf_npy = data_dir / "rf" / "raw" / "hw_capture.npy"
     rf_meta_json = data_dir / "rf" / "metadata" / "hw_capture.json"

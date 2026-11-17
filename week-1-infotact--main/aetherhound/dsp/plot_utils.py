@@ -276,7 +276,7 @@ def save_acoustic_waveform_plot(
 
     ax2.plot(times_sec, envelope, color="#e91e63", linewidth=1.4, label="Streaming Causal Envelope")
     env_title = "Extracted Pulse Amplitude Envelope"
-    if match_score:
+    if match_score is not None:
         env_title += f" [Recognized {target_morse} | Score: {match_score * 100:.1f}%]"
     ax2.set_title(env_title, fontsize=10, fontweight="bold")
     ax2.set_xlabel("Time (seconds)", fontsize=9)
@@ -319,10 +319,10 @@ def save_acoustic_waveform_plot(
         raw_data_path=raw_wav_path,
         raw_data_sha256=raw_hash,
         device_verified=(norm_source_type == SOURCE_TYPE_LIVE_HARDWARE),
-        detection_event_type="ACOUSTIC_MORSE_PATTERN" if match_score else None,
+        detection_event_type="ACOUSTIC_MORSE_PATTERN" if match_score is not None else None,
         metrics={
             "duration_sec": round(duration_sec, 2),
-            "match_score": round(match_score, 3) if match_score else 0.0,
+            "match_score": round(match_score, 3) if match_score is not None else None,
             "target_pattern": target_morse or "",
         },
         notes=f"Captured from receiver stream ({acq_mode}). Source tagged as {source_label}.",

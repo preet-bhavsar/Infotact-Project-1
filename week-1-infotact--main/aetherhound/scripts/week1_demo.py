@@ -33,13 +33,14 @@ from aetherhound.hardware.acoustic_capture import AcousticCaptureDevice, AudioCh
 from aetherhound.hardware.config import HardwareConfig
 from aetherhound.hardware.device_check import print_diagnostic_report, run_diagnostics
 from aetherhound.hardware.rf_capture import IQSampleWindow, RFCaptureDevice
-from aetherhound.interface.live_monitor import LiveMonitorInterface
 from aetherhound.mock_malware.audio_generator import ControlledSpeakerPlayer, SyntheticFanAudioGenerator
 from aetherhound.mock_malware.fan_pattern_simulator import FanPatternSimulator
 
 
 def run_hardware_mode(config: HardwareConfig, duration: int = 20) -> None:
     """Option A: Live Hardware Monitoring Mode."""
+    from aetherhound.interface.live_monitor import LiveMonitorInterface
+
     print("\n" + "=" * 60)
     print("AETHERHOUND – OPTION A: HARDWARE MODE")
     print("=" * 60)

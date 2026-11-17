@@ -27,6 +27,7 @@ class AudioChunk:
     is_synthetic: bool = False
     chunk_id: int = 0
     dropped_before: int = 0
+    source_type: Optional[str] = None
 
 
 class AcousticCaptureDevice:
@@ -60,6 +61,7 @@ class AcousticCaptureDevice:
         self._is_recording = False
         self._recording_buffer: List[np.ndarray] = []
         self._recording_lock = threading.Lock()
+        self._recording_started_at: Optional[float] = None
 
     @property
     def is_running(self) -> bool:
@@ -91,9 +93,6 @@ class AcousticCaptureDevice:
             if not success:
                 # Fallback to synthetic if hardware fails
                 return False
-        else:
-            self._connected = True
-
         self._is_running.set()
 
         if self.synthetic_mode:
@@ -142,6 +141,7 @@ class AcousticCaptureDevice:
         """Start accumulating incoming samples into recording buffer for WAV export."""
         with self._recording_lock:
             self._recording_buffer = []
+            self._recording_started_at = time.time()
             self._is_recording = True
 
     def stop_and_save_recording(
@@ -149,6 +149,7 @@ class AcousticCaptureDevice:
         file_path: str,
         metadata_path: Optional[str] = None,
         sensor_id: str = "MIC-01",
+        capture_id: Optional[str] = None,
     ) -> bool:
         """Stop accumulating, save recorded audio to WAV, and write Day 1 acoustic provenance JSON."""
         with self._recording_lock:
@@ -159,13 +160,15 @@ class AcousticCaptureDevice:
             self._recording_buffer = []
 
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-        sf.write(file_path, data, self.config.sample_rate_hz)
+        subtype = "FLOAT" if self.config.audio_format == "float32" else "PCM_16"
+        sf.write(file_path, data, self.config.sample_rate_hz, subtype=subtype)
 
         from aetherhound.core.evidence_metadata import (
             SOURCE_TYPE_LIVE_HARDWARE,
             SOURCE_TYPE_SYNTHETIC_SIMULATION,
             build_acoustic_metadata,
             compute_file_sha256,
+            generate_capture_id,
             save_metadata,
         )
 
@@ -177,6 +180,16 @@ class AcousticCaptureDevice:
             else "PyAudio Non-Blocking Microphone Stream"
         )
         meta_out = metadata_path or (os.path.splitext(file_path)[0] + ".json")
+        rms_energy = float(np.sqrt(np.mean(np.square(data, dtype=np.float64))))
+        peak_amplitude = float(np.max(np.abs(data)))
+        if data.ndim == 2:
+            zero_crossing_rate = (
+                float(np.mean(np.mean(data[:-1] * data[1:] < 0, axis=0)))
+                if len(data) > 1
+                else 0.0
+            )
+        else:
+            zero_crossing_rate = float(np.mean(data[:-1] * data[1:] < 0)) if len(data) > 1 else 0.0
         meta = build_acoustic_metadata(
             sensor_id=f"{sensor_id} (VIRTUAL RECEIVER)" if is_syn else sensor_id,
             source_type=source_type,
@@ -187,7 +200,18 @@ class AcousticCaptureDevice:
             data_file=file_path,
             acquisition_mode=acq_mode,
             data_sha256=compute_file_sha256(file_path),
+            capture_id=capture_id or generate_capture_id("MIC"),
+            timestamp_epoch=self._recording_started_at,
         )
+        meta["metrics"].update(
+            {
+                "rms_energy": rms_energy,
+                "peak_amplitude": peak_amplitude,
+                "zero_crossing_rate": zero_crossing_rate,
+            }
+        )
+        meta["microphone_id"] = sensor_id
+        meta["capture_status"] = "COMPLETED"
         save_metadata(meta, meta_out)
         self._last_recording_metadata = meta
         return True
@@ -205,14 +229,17 @@ class AcousticCaptureDevice:
                 now = time.time()
                 # Parse in_data to float32 numpy
                 if fmt == pyaudio.paFloat32:
-                    samples = np.frombuffer(in_data, dtype=np.float32)
+                    raw_samples = np.frombuffer(in_data, dtype=np.float32)
                 else:
                     int_samples = np.frombuffer(in_data, dtype=np.int16)
-                    samples = int_samples.astype(np.float32) / 32768.0
+                    raw_samples = int_samples.astype(np.float32) / 32768.0
 
-                if self.config.channels == 2 and len(samples) > 0:
-                    # Average stereo to mono for covert channel DSP
-                    samples = samples.reshape(-1, 2).mean(axis=1)
+                if self.config.channels == 2 and len(raw_samples) > 0:
+                    recording_samples = raw_samples.reshape(-1, 2)
+                    samples = recording_samples.mean(axis=1)
+                else:
+                    recording_samples = raw_samples
+                    samples = raw_samples
 
                 self._chunk_counter += 1
                 self._total_frames += len(samples)
@@ -225,6 +252,7 @@ class AcousticCaptureDevice:
                     is_synthetic=False,
                     chunk_id=self._chunk_counter,
                     dropped_before=self._dropped_chunks,
+                    source_type="LIVE_HARDWARE",
                 )
 
                 try:
@@ -239,7 +267,7 @@ class AcousticCaptureDevice:
 
                 if self._is_recording:
                     with self._recording_lock:
-                        self._recording_buffer.append(samples.copy())
+                        self._recording_buffer.append(recording_samples.copy())
 
                 return (None, pyaudio.paContinue)
 
@@ -263,6 +291,18 @@ class AcousticCaptureDevice:
         except Exception as ex:
             self._connected = False
             self._last_error = f"PyAudio stream initialization failed: {ex}"
+            if self._stream is not None:
+                try:
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
+            if self._pyaudio_instance is not None:
+                try:
+                    self._pyaudio_instance.terminate()
+                except Exception:
+                    pass
+                self._pyaudio_instance = None
             return False
 
     def _synthetic_audio_loop(self) -> None:
@@ -300,6 +340,7 @@ class AcousticCaptureDevice:
                 is_synthetic=True,
                 chunk_id=self._chunk_counter,
                 dropped_before=self._dropped_chunks,
+                source_type="SYNTHETIC_SIMULATION",
             )
 
             try:
@@ -314,11 +355,110 @@ class AcousticCaptureDevice:
 
             if self._is_recording:
                 with self._recording_lock:
-                    self._recording_buffer.append(samples.copy())
+                    recording_samples = (
+                        np.column_stack((samples, samples))
+                        if self.config.channels == 2
+                        else samples
+                    )
+                    self._recording_buffer.append(recording_samples.copy())
 
             elapsed = time.time() - loop_start
             sleep_time = max(0.001, duration_per_chunk - elapsed)
             time.sleep(sleep_time)
+
+
+def capture_recording(
+    config: Optional[AcousticConfig] = None,
+    duration_sec: float = 1.0,
+    output_dir: str = "data/acoustic/raw",
+    device: Optional[AcousticCaptureDevice] = None,
+    sensor_id: str = "MIC-01",
+) -> dict:
+    """Record a bounded microphone capture and write WAV plus provenance metadata."""
+    import os
+
+    if duration_sec <= 0:
+        raise ValueError("Recording duration must be greater than zero")
+    cfg = config or AcousticConfig()
+    cfg.validate()
+    capture_device = device or AcousticCaptureDevice(cfg)
+    if capture_device.synthetic_mode:
+        raise ValueError("Microphone recording requires a physical audio input device")
+    os.makedirs(output_dir, exist_ok=True)
+    from aetherhound.core.evidence_metadata import generate_capture_id
+
+    capture_id = generate_capture_id("MIC")
+    audio_path = os.path.abspath(os.path.join(output_dir, f"{capture_id}.wav"))
+    metadata_path = os.path.abspath(os.path.join(output_dir, f"{capture_id}.json"))
+    if not capture_device.start():
+        raise RuntimeError(getattr(capture_device, "_last_error", None) or "Microphone unavailable")
+    try:
+        capture_device.start_recording()
+        time.sleep(duration_sec)
+        if not capture_device.stop_and_save_recording(
+            audio_path,
+            metadata_path,
+            sensor_id=sensor_id,
+            capture_id=capture_id,
+        ):
+            raise RuntimeError("Microphone stream returned no audio frames")
+    finally:
+        capture_device.stop()
+
+    metadata = capture_device._last_recording_metadata
+    return {
+        "capture_id": capture_id,
+        "capture_status": "COMPLETED",
+        "audio_file": audio_path,
+        "metadata_file": metadata_path,
+        "sample_count": metadata["sample_count"],
+        "metadata": metadata,
+    }
+
+
+def main() -> None:
+    import argparse
+    from aetherhound.hardware.device_check import check_microphones
+
+    parser = argparse.ArgumentParser(description="List microphones or record WAV audio")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("list", help="List available audio input devices")
+    record_parser = subparsers.add_parser("record", help="Record a microphone to WAV")
+    record_parser.add_argument("--duration", type=float, default=5.0)
+    record_parser.add_argument("--device-index", type=int)
+    record_parser.add_argument("--sample-rate", type=int, default=44100)
+    record_parser.add_argument("--channels", type=int, choices=(1, 2), default=1)
+    record_parser.add_argument("--audio-format", choices=("int16", "float32"), default="int16")
+    record_parser.add_argument("--output-dir", default="data/acoustic/raw")
+    args = parser.parse_args()
+
+    if args.command == "list":
+        _, devices = check_microphones()
+        if not devices:
+            print("No microphone input devices found.")
+        for item in devices:
+            print(f"{item['index']}: {item['name']} ({item['max_inputs']} input channels)")
+        return
+
+    try:
+        defaults = AcousticConfig()
+        device_index = args.device_index if args.device_index is not None else defaults.device_index
+        cfg = AcousticConfig(
+            sample_rate_hz=args.sample_rate,
+            channels=args.channels,
+            device_index=device_index,
+            audio_format=args.audio_format,
+        )
+        mic_id = f"MIC-{device_index}" if device_index is not None else "MIC-DEFAULT"
+        result = capture_recording(cfg, args.duration, args.output_dir, sensor_id=mic_id)
+    except (RuntimeError, ValueError, OSError) as exc:
+        parser.exit(1, f"Microphone recording failed: {exc}\n")
+    print(f"Capture {result['capture_id']} {result['capture_status']}: {result['sample_count']} frames")
+    print(f"WAV: {result['audio_file']}\nMetadata: {result['metadata_file']}")
+
+
+if __name__ == "__main__":
+    main()
 
 
 def inject_synthetic_audio_pulse(
@@ -341,4 +481,5 @@ def inject_synthetic_audio_pulse(
         is_synthetic=True,
         chunk_id=chunk.chunk_id,
         dropped_before=chunk.dropped_before,
+        source_type="SYNTHETIC_SIMULATION",
     )

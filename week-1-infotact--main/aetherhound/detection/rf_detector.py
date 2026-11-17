@@ -31,6 +31,7 @@ class RFAlertEvent:
     status: str = "SUSPICIOUS RF ACTIVITY"
     is_synthetic: bool = False
     evidence: Dict[str, float] = field(default_factory=dict)
+    source_type: Optional[str] = None
 
 
 class RFDetector:
@@ -128,6 +129,7 @@ class RFDetector:
                     timestamp=now,
                     status="SUSPICIOUS RF ACTIVITY",
                     is_synthetic=window.is_synthetic,
+                    source_type=window.source_type,
                     evidence={
                         "peak_bin": strongest.bin_index,
                         "noise_std_db": round(baseline_sigma, 2),
