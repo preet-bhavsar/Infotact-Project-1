@@ -1,4 +1,4 @@
-"""
+﻿"""
 AetherHound RF Signal Processor Module
 Executes live FFT, power spectral density, noise floor estimation,
 peak extraction, and spectral tracking for RTL-SDR windows.
@@ -64,6 +64,7 @@ class RFProcessor:
 
         # Retain latest raw IQ window and spectrum for provenance validation
         self.latest_raw_iq: Optional[np.ndarray] = None
+        self.latest_filtered_iq: Optional[np.ndarray] = None
         self.latest_frequencies_hz: Optional[np.ndarray] = None
         self.latest_spectrum_db: Optional[np.ndarray] = None
         self.latest_processed: Optional[RFProcessedWindow] = None
@@ -76,9 +77,34 @@ class RFProcessor:
         sr = window.sample_rate_hz
         fc = window.center_freq_hz
 
+        # Preserve original IQ samples
+        raw_samples = np.asarray(samples).copy()
+        self.latest_raw_iq = raw_samples
+
+        # RF FIR Low-Pass Filtering
+        if self.config.rf_filter_enabled and sr > 0 and len(raw_samples) >= 3:
+            taps = min(self.config.rf_filter_taps, len(raw_samples))
+            if taps % 2 == 0:
+                taps -= 1
+
+            cutoff = min(self.config.rf_filter_cutoff_hz, sr * 0.4)
+
+            if taps >= 3 and cutoff > 0:
+                coefficients = signal.firwin(
+                    taps, cutoff, fs=sr, window="hamming"
+                )
+                filtered_samples = signal.lfilter(
+                    coefficients, [1.0], raw_samples
+                )
+            else:
+                filtered_samples = raw_samples.copy()
+        else:
+            filtered_samples = raw_samples.copy()
+
+        self.latest_filtered_iq = filtered_samples.copy()
         # 1. FFT and Power Spectrum in dB
         freqs, power_db = compute_power_spectrum_db(
-            iq_samples=samples,
+            iq_samples=filtered_samples,
             fft_size=self.fft_size,
             sample_rate_hz=sr,
             center_freq_hz=fc,
@@ -162,3 +188,5 @@ class RFProcessor:
         self.latest_processed = proc_win
 
         return proc_win
+
+
