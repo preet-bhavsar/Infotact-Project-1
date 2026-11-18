@@ -1,4 +1,4 @@
-"""
+﻿"""
 AetherHound Hardware Configuration Module
 Defines configuration structures, hardware limits, validation routines,
 and environment overrides for both RF (RTL-SDR) and Acoustic hardware.
@@ -29,6 +29,9 @@ class RFConfig:
     ppm_correction: int = int(os.getenv("AETHERHOUND_RF_PPM_CORRECTION", 0))
     device_index: int = int(os.getenv("AETHERHOUND_RF_DEVICE_INDEX", 0))
     fft_size: int = int(os.getenv("AETHERHOUND_RF_FFT_SIZE", 2048))
+    rf_filter_enabled: bool = os.getenv("AETHERHOUND_RF_FILTER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    rf_filter_cutoff_hz: float = float(os.getenv("AETHERHOUND_RF_FILTER_CUTOFF_HZ", 400000))
+    rf_filter_taps: int = int(os.getenv("AETHERHOUND_RF_FILTER_TAPS", 101))
     samples_per_window: int = int(os.getenv("AETHERHOUND_RF_WINDOW_SAMPLES", 16384))
     detection_threshold_sigma: float = float(os.getenv("AETHERHOUND_RF_SIGMA_THRESHOLD", 4.5))
     rolling_baseline_len: int = 50
@@ -52,6 +55,10 @@ class RFConfig:
                 raise ValueError(f"Invalid gain specification: '{self.gain}'. Must be 'auto' or a numeric dB value.")
         if self.fft_size < 128 or (self.fft_size & (self.fft_size - 1)) != 0:
             raise ValueError(f"FFT size {self.fft_size} must be a power of 2 and >= 128")
+        if self.rf_filter_cutoff_hz <= 0:
+            raise ValueError("RF filter cutoff must be positive")
+        if self.rf_filter_taps < 3 or self.rf_filter_taps % 2 == 0:
+            raise ValueError("RF filter taps must be an odd integer >= 3")
         if self.samples_per_window < self.fft_size:
             raise ValueError(f"Samples per window ({self.samples_per_window}) must be >= FFT size ({self.fft_size})")
 
@@ -129,3 +136,5 @@ class HardwareConfig:
         self.rf.validate()
         self.acoustic.validate()
         self.morse.validate()
+
+
