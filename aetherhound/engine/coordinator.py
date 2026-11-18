@@ -86,11 +86,12 @@ class PipelineCoordinator:
         # 6. Extract Normalized 2D Spectrogram Patch
         spectrogram_patch = self.spectral.compute_spectrogram_patch(filtered_audio)
 
-        # 7. PyTorch Autoencoder Inference & Anomaly Scoring
+        # 7. PyTorch Autoencoder Inference & Anomaly Scoring (Multi-Modal Fusion)
         ml_result = self.evaluator.evaluate_patch(spectrogram_patch)
-        is_anomaly = ml_result["is_anomaly"]
         recon_error = ml_result["reconstruction_error"]
         threshold = ml_result["threshold"]
+        # Multi-modal detection: ML autoencoder reconstruction residual OR classical peak SNR anomaly
+        is_anomaly = ml_result["is_anomaly"] or (signal_metrics.get("peak_snr_db", 0.0) > 10.0)
 
         # 8. Spatial Triangulation & Pinpointing
         pinpointed_rack, confidence, (est_x, est_y) = self.triangulator.pinpoint_infected_rack(rssi_map)

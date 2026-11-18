@@ -40,3 +40,11 @@ def test_anomaly_evaluator():
     norm_res = evaluator.evaluate_patch(dummy_baseline[0])
     assert "reconstruction_error" in norm_res
     assert "is_anomaly" in norm_res
+
+def test_residual_matrix_export():
+    evaluator = AnomalyEvaluator()
+    orig = np.ones((40, 64), dtype=np.float32)
+    recon = np.zeros((40, 64), dtype=np.float32)
+    res = evaluator.export_residual_matrix(orig, recon)
+    assert res.shape == (40, 64)
+    assert np.allclose(res, 1.0)

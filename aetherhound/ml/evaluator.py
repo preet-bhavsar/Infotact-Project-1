@@ -107,3 +107,8 @@ class AnomalyEvaluator:
             "anomaly_score": float(anomaly_score),
             "reconstructed_patch": recon_np
         }
+
+    def export_residual_matrix(self, original_spec: np.ndarray, recon_spec: np.ndarray) -> np.ndarray:
+        """Export per-bin reconstruction residual matrix for forensic incident analysis."""
+        residual = np.abs(original_spec - recon_spec)
+        return residual.astype(np.float32)
