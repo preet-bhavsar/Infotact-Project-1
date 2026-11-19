@@ -196,6 +196,18 @@ class HackerTerminalUI:
                 sleep_time = max(0.0, frame_interval - elapsed)
                 time.sleep(sleep_time)
 
+    def render_rack_grid(self, active_rack_id: str = "Rack-Alpha") -> str:
+        """Render high-contrast ASCII server room grid for rapid incident localization."""
+        rows = [
+            "+---------------+---------------+---------------+",
+            "|  Rack-Alpha   |   Rack-Beta   |  Rack-Gamma   |",
+            "+---------------+---------------+---------------+",
+            "|  Rack-Delta   |  Rack-Epsilon |   Rack-Zeta   |",
+            "+---------------+---------------+---------------+",
+        ]
+        grid = "\n".join(rows)
+        return grid.replace(active_rack_id, f"*{active_rack_id}*")
+
 if __name__ == "__main__":
     ui = HackerTerminalUI()
     ui.run(max_frames=100)
