@@ -1,4 +1,4 @@
-"""
+﻿"""
 AetherHound Acoustic Signal Processor Module
 Executes audio filtering, RMS energy, spectral centroid, dominant frequency,
 spectrogram update, and envelope tracking for incoming microphone chunks.
@@ -18,7 +18,7 @@ from aetherhound.dsp.feature_extractor import (
     extract_acoustic_features,
     extract_signal_envelope,
 )
-from aetherhound.dsp.spectrogram import RollingWaterfallBuffer
+from aetherhound.dsp.spectrogram import RollingWaterfallBuffer, compute_stft_spectrogram
 from aetherhound.hardware.acoustic_capture import AudioChunk
 from aetherhound.hardware.config import AcousticConfig
 
@@ -96,11 +96,20 @@ class AcousticProcessor:
         # Ratio of current RMS to normal baseline
         energy_ratio = float(features.rms_energy / max(baseline, 1e-6))
 
-        # 5. Push to spectrogram buffer
-        fft_vals = np.abs(np.fft.rfft(filtered * np.hanning(len(filtered)), n=512))
-        spec_db = 20.0 * np.log10(np.maximum(fft_vals, 1e-9))
-        freqs = np.fft.rfftfreq(512, d=1.0 / sr)
-        self.spectrogram.push_spectrum(spec_db, freqs, chunk.timestamp)
+        # 5. Compute STFT and push each time frame into the waterfall
+        freqs, frame_times, spec_matrix_db = compute_stft_spectrogram(
+            filtered,
+            sr,
+            nperseg=512,
+            noverlap=256,
+        )
+
+        for frame_index, frame_time in enumerate(frame_times):
+            self.spectrogram.push_spectrum(
+                spec_matrix_db[:, frame_index],
+                freqs,
+                chunk.timestamp + float(frame_time),
+            )
 
         res = AcousticProcessedChunk(
             chunk_id=chunk.chunk_id,
@@ -121,3 +130,4 @@ class AcousticProcessor:
         self.latest_processed = res
 
         return res
+
